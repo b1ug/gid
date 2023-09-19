@@ -10,7 +10,7 @@
 // +build !ios
 // +build linux darwin windows
 
-package hid
+package gid
 
 /*
 #include <wchar.h>

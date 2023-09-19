@@ -1,4 +1,4 @@
-package hid
+package gid
 
 /*
 #cgo LDFLAGS: -lSetupapi -lhid

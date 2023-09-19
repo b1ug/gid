@@ -1,7 +1,7 @@
 //go:build (!linux && !darwin && !windows) || ios || !cgo
 // +build !linux,!darwin,!windows ios !cgo
 
-package hid
+package gid
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
 func Devices() <-chan *DeviceInfo {

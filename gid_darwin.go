@@ -1,4 +1,4 @@
-package hid
+package gid
 
 /*
 #cgo LDFLAGS: -L . -L/usr/local/lib -framework CoreFoundation -framework IOKit

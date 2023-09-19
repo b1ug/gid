@@ -1,4 +1,4 @@
-package hid
+package gid
 
 /*
 #cgo linux CFLAGS: -DDEFAULT_VISIBILITY="" -DOS_LINUX -D_GNU_SOURCE -DPOLL_NFDS_TYPE=int
