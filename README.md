@@ -1,5 +1,8 @@
 # gid - Gopher Interface Devices
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/b1ug/gid.svg)](https://pkg.go.dev/github.com/b1ug/gid)
+[![GitHub Actions](https://github.com/b1ug/gid/actions/workflows/build.yml/badge.svg)](https://github.com/b1ug/gid/actions/workflows/build.yml)
+
 > Yet another Go package tailored for interacting with USB Human Interface Devices (HID).
 
 This package facilitates cross-platform communications with HID devices on macOS, Linux, and Windows. Behind the scenes, it employs [boombuler/hid](https://github.com/boombuler/hid) as its foundation and broadens its functionalities by reading feature reports from USB HID devices, and its Linux implementation is a derivative of [dolmen-go/hid](https://github.com/dolmen-go/hid), which wraps [`hidapi`](https://github.com/signal11/hidapi).
