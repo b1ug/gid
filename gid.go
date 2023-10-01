@@ -69,7 +69,7 @@ func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
 	return result
 }
 
-// FindDevices iterates through all devices with a given vendor and product id.
+// FindDevices creates a channel to emit all devices with a given vendor and product id.
 // It returns a channel which is closed when all devices have been enumerated.
 func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
@@ -87,8 +87,8 @@ func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
 	return result
 }
 
-// FindDevicesByProduct iterates through all devices with a given vendor and product id.
-// It returns a channel which is closed when all devices have been enumerated.
+// FindDevicesByProduct creates a channel to emit device information where the device's product name contains the given string.
+// The channel is closed after all devices have been processed.
 func FindDevicesByProduct(product string) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
 
