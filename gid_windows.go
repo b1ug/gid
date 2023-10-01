@@ -293,7 +293,7 @@ func ByPath(devicePath string) (*DeviceInfo, error) {
 
 // Devices returns all HID devices which are connected to the system.
 func Devices() <-chan *DeviceInfo {
-	result := make(chan *DeviceInfo)
+	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
 		enumerateLock.Lock()
 		defer enumerateLock.Unlock()

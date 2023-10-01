@@ -98,3 +98,5 @@ var (
 	errUnsupportedPlatform = errors.New("hid: unsupported platform")
 	errNotImplemented      = errors.New("hid: method not implemented")
 )
+
+const maxDeviceChannelSize = 1024

@@ -17,7 +17,7 @@ import (
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
 func Devices() <-chan *DeviceInfo {
-	result := make(chan *DeviceInfo)
+	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
 		enumerateLock.Lock()
 		defer enumerateLock.Unlock()
