@@ -44,31 +44,64 @@ type Device interface {
 	ReadFeature([]byte) (int, error)
 }
 
-// FindDevices iterates through all devices with a given vendor and product id
+// ListFirstDevice returns the first device of which the cond function returns true.
+// If no device is found, nil is returned.
+func ListFirstDevice(cond func(*DeviceInfo) bool) *DeviceInfo {
+	ch := Devices()
+	defer drainDevices(ch)
+
+	for dev := range ch {
+		if cond(dev) {
+			return dev
+		}
+	}
+	return nil
+}
+
+// ListAllDevices returns all devices of which the cond function returns true.
+func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
+	var result []*DeviceInfo
+	for dev := range Devices() {
+		if cond(dev) {
+			result = append(result, dev)
+		}
+	}
+	return result
+}
+
+// FindDevices iterates through all devices with a given vendor and product id.
+// It returns a channel which is closed when all devices have been enumerated.
 func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
 	go func() {
-		for dev := range Devices() {
+		ch := Devices()
+		defer drainDevices(ch)
+		defer close(result)
+
+		for dev := range ch {
 			if dev.VendorID == vendor && dev.ProductID == product {
 				result <- dev
 			}
 		}
-		close(result)
 	}()
 	return result
 }
 
-// FindDevicesByProduct iterates through all devices with a given vendor and product id
+// FindDevicesByProduct iterates through all devices with a given vendor and product id.
+// It returns a channel which is closed when all devices have been enumerated.
 func FindDevicesByProduct(product string) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
 
 	go func() {
-		for dev := range Devices() {
+		ch := Devices()
+		defer drainDevices(ch)
+		defer close(result)
+
+		for dev := range ch {
 			if strings.Contains(dev.Product, product) {
 				result <- dev
 			}
 		}
-		close(result)
 	}()
 
 	return result
