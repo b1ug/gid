@@ -21,3 +21,8 @@ func ByPath(path string) (*DeviceInfo, error) {
 func Supported() bool {
 	return false
 }
+
+// Open opens the device for reading and writing.
+func (di *DeviceInfo) Open() (Device, error) {
+	return nil, errUnsupportedPlatform
+}
