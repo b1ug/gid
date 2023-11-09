@@ -1,0 +1,102 @@
+version: 2.1
+orbs:
+  go: circleci/go@1.9.0
+jobs:
+  build-arm:
+    parameters:
+      os-version:
+        type: string
+      go-version:
+        type: string
+    working_directory: ~/repo
+    resource_class: arm.medium
+    machine:
+      image: << parameters.os-version >>
+    steps:
+      - checkout
+      - go/install:
+          version: << parameters.go-version >>
+      - run:
+          name: Go Build
+          shell: /bin/bash
+          command: |
+            uname -a
+            gcc --version
+            go version
+            go build -v .
+      - run:
+          name: Go Test
+          shell: /bin/bash
+          command: |
+            go test -cover -covermode=atomic -v -count 1 ./...
+
+  build-macos:
+    parameters:
+      os-version:
+        type: string
+      go-version:
+        type: string
+    working_directory: ~/repo
+    # resource_class: macos.m1.medium.gen1
+    resource_class: macos.x86.medium.gen2
+    macos:
+      xcode: << parameters.os-version >>
+    steps:
+      - checkout
+      - go/install:
+          version: << parameters.go-version >>
+      - run:
+          name: Go Build
+          shell: /bin/bash
+          command: |
+            uname -a
+            gcc --version
+            go version
+            go build -v .
+      - run:
+          name: Go Test
+          shell: /bin/bash
+          command: |
+            go test -cover -covermode=atomic -v -count 1 ./...
+
+# Entrypoint
+workflows:
+  build:
+    jobs:
+      - build-arm:
+          name: "go<< matrix.go-version >> on << matrix.os-version >> arm64"
+          matrix:
+            parameters:
+              os-version:
+                - "ubuntu-2004:2023.07.1"
+                - "ubuntu-2204:2023.07.1"
+              go-version:
+                - "1.13.15"
+                - "1.14.15"
+                - "1.15.15"
+                - "1.16.15"
+                - "1.17.13"
+                - "1.18.10"
+                - "1.19.13"
+                - "1.20.11"
+                - "1.21.4"
+      - build-macos:
+          name: "go<< matrix.go-version >> on macOS << matrix.os-version >>"
+          matrix:
+            parameters:
+              os-version:
+                - "12.5.1"  # macOS 11.4.0 - Xcode 12.5.1 (12E507)
+                - "13.4.1"  # macOS 12.3.1 - Xcode 13.4 (13F17a)
+                # - "14.2.0"  # macOS 12.6 - Xcode 14.2 (14C18)
+                - "14.3.1"  # macOS 13.2.1 - Xcode 14.3.1 (14E300b)
+                - "15.0.0"  # macOS 13.5.1 - Xcode 15 (15A240d)
+              go-version:
+                - "1.13.15"
+                - "1.14.15"
+                - "1.15.15"
+                - "1.16.15"
+                - "1.17.13"
+                - "1.18.10"
+                - "1.19.13"
+                - "1.20.11"
+                - "1.21.4"

@@ -15,10 +15,9 @@ jobs:
     name: Go ${{ matrix.go-ver }} on ${{ matrix.vm-os }}
     runs-on: ${{ matrix.vm-os }}
     strategy:
-      max-parallel: 9
       fail-fast: false
       matrix:
-        vm-os: [ubuntu-20.04, macos-12, windows-2022]
+        vm-os: [ubuntu-20.04, ubuntu-22.04, macos-11, macos-12, macos-13, windows-2019, windows-2022]
         go-ver:
           - "1.13.15"
           - "1.14.15"
@@ -27,8 +26,8 @@ jobs:
           - "1.17.13"
           - "1.18.10"
           - "1.19.13"
-          - "1.20.8"
-          - "1.21.0"
+          - "1.20.11"
+          - "1.21.4"
     steps:
       - uses: actions/checkout@v3
       - name: Set up Go
@@ -37,10 +36,10 @@ jobs:
           go-version: ${{ matrix.go-ver }}
       - name: Go Build
         run: |
-          git status
+          gcc --version
           go version
           go build -v .
       - name: Go Test
-        if: ${{ runner.os != 'Windows' }}
+        if: ${{ matrix.vm-os != 'windows-2022' }}
         run: |
           go test -cover -covermode=atomic -v -count 1 ./...
