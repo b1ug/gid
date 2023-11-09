@@ -45,13 +45,14 @@ type Device interface {
 }
 
 // ListFirstDevice returns the first device of which the cond function returns true.
+// If cond is nil, the first device is returned.
 // If no device is found, nil is returned.
 func ListFirstDevice(cond func(*DeviceInfo) bool) *DeviceInfo {
 	ch := Devices()
 	defer drainDevices(ch)
 
 	for dev := range ch {
-		if cond(dev) {
+		if cond == nil || cond(dev) {
 			return dev
 		}
 	}
@@ -59,10 +60,11 @@ func ListFirstDevice(cond func(*DeviceInfo) bool) *DeviceInfo {
 }
 
 // ListAllDevices returns all devices of which the cond function returns true.
+// If cond is nil, all devices are returned.
 func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
 	var result []*DeviceInfo
 	for dev := range Devices() {
-		if cond(dev) {
+		if cond == nil || cond(dev) {
 			result = append(result, dev)
 		}
 	}
