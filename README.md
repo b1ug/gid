@@ -1,7 +1,9 @@
 # gid - Gopher Interface Devices
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/b1ug/gid.svg)](https://pkg.go.dev/github.com/b1ug/gid)
+[![Go Report Card](https://goreportcard.com/badge/github.com/b1ug/gid)](https://goreportcard.com/report/github.com/b1ug/gid)
 [![GitHub Actions](https://github.com/b1ug/gid/actions/workflows/build.yml/badge.svg)](https://github.com/b1ug/gid/actions/workflows/build.yml)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/b1ug/gid/tree/master.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/b1ug/gid/tree/master)
 
 > Yet another Go package tailored for interacting with USB Human Interface Devices (HID).
 
