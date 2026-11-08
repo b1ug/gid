@@ -258,9 +258,9 @@ func (dev *winDevice) overlapped(handle syscall.Handle, buffer []byte, reportTyp
 	}
 	defer C.gid_free_overlapped(ol)
 	if write {
-		code = C.gid_write_overlapped(C.uintptr_t(handle), payload, C.DWORD(len(buffer)), ol)
+		code = C.gid_write_overlapped(C.uintptr_t(handle), C.PVOID(payload), C.DWORD(len(buffer)), ol)
 	} else {
-		code = C.gid_ioctl_overlapped(C.uintptr_t(handle), C.DWORD(reportType), payload, C.DWORD(len(buffer)), ol)
+		code = C.gid_ioctl_overlapped(C.uintptr_t(handle), C.DWORD(reportType), C.PVOID(payload), C.DWORD(len(buffer)), ol)
 	}
 	if code != C.ERROR_SUCCESS && syscall.Errno(code) != syscall.ERROR_IO_PENDING {
 		if write {
