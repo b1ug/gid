@@ -47,9 +47,9 @@ verify old systems, Raspberry Pi OS, or device I/O on hosted runners.
 
 The current development candidate is on `validation/runtime-gid`; it is separate
 from the frozen [PR #2](https://github.com/b1ug/gid/pull/2) at `f520a7e`.
-CI results apply to their exact checked-out commits. In particular, earlier
-successful runtime runs do not validate the newer Windows cancellation and
-enumeration changes. See the [Chinese candidate validation record](docs/candidate-validation.zh-CN.md)
+CI results apply to their exact checked-out commits. The [runtime integration run](https://github.com/b1ug/nb1/actions/runs/42517136819)
+passed all eight jobs with GID `7d9978d`, including Windows amd64 and 386/WOW64
+software tests. See the [Chinese candidate validation record](docs/candidate-validation.zh-CN.md)
 for the commits, failed attempt, local checks and remaining hardware work.
 
 By default, tests may enumerate HID devices but do not open them. To opt in to
@@ -100,9 +100,12 @@ overlapped operation retains its own C-allocated payload, `OVERLAPPED` and event
 until native completion is collected. A late-issued operation also requests its
 own cancellation if closing has begun. Requesting cancellation does not release
 resources early. Synchronous `HidD_SetFeature` and driver behavior can still
-delay `Close`; native Windows validation of the newest candidate is pending.
+delay `Close`. Native Windows software tests cover pending named-pipe cancellation;
+they do not validate physical HID or guarantee a close deadline.
 The enumeration candidate also bounds string copying and uses the native C
-detail-structure size; see the [Windows validation notes](docs/windows-enumeration-validation.md).
+detail-structure size; HID metadata failures leave optional strings empty rather
+than reusing another field. See the [Windows validation notes](docs/windows-enumeration-validation.md)
+and [metadata regression record](docs/windows-hid-metadata-validation.zh-CN.md).
 
 These lifetime guards do not serialize a multi-call application protocol. A
 request-write/response-read transaction still needs an application-level owner

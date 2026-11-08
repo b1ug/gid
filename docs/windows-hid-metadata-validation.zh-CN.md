@@ -29,7 +29,7 @@
 
 更严格的 runtime profile 一致性校验可另行评估，不能借本修复悄悄改变上层兼容范围。元数据失败原因的诊断也可单独扩展。
 
-## 软件验证与尚待执行
+## 软件验证与剩余范围
 
 共享纯 Go callback 用例覆盖：product/serial 失败不复用 manufacturer，serial 失败不变为 product，FALSE 即使写入了貌似合法 serial 也必须返回空，属性错误不消费部分 VID/PID，以及 Unicode、空字符串、无 NUL 和末尾 NUL 边界。
 
@@ -37,4 +37,4 @@
 
 本机 Go 1.27.3、darwin/arm64、CGO=1 下的这些无硬件用例，race 重复 30 次、Go 1.13 语言检查、build、vet 通过。它们不枚举或打开设备。
 
-Windows CGO 专属测试还包括 C `sizeof(WCHAR)` 算出的 512 字节长度，以及对无效 HANDLE 的属性查询失败。这两项须在原生 Windows CI 执行；Mac 测试通过不替代它们，更不代表 Windows USB 或热拔插验证完成。
+Windows CGO 专属测试包括 C `sizeof(WCHAR)` 算出的 512 字节长度，以及对无效 HANDLE 的属性查询失败。[集成运行42517136819](https://github.com/b1ug/nb1/actions/runs/42517136819)固定GID `7d9978d` 后，Windows amd64原生race/vet与386/WOW64普通测试均通过，整轮8/8。这些无USB软件检查不代表Windows实体设备或热拔插验证完成。

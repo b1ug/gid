@@ -50,8 +50,9 @@ Windows 的异步载荷、OVERLAPPED 和事件必须保留到 `GetOverlappedResu
 | [42511900040](https://github.com/b1ug/nb1/actions/runs/42511900040) | `c0be9f8` | 7/7 通过，包含 Linux 生命周期实现；不覆盖后来的 Windows 取消实现和枚举修复 |
 | [42514864088](https://github.com/b1ug/nb1/actions/runs/42514864088) | `6d51cae` | Windows 编译失败：两个 `unsafe.Pointer` 参数需要转换为 `C.PVOID`；没有进入 Windows 原生取消测试。其它 6 项通过 |
 | [42516120030](https://github.com/b1ug/nb1/actions/runs/42516120030) | `1ea70d8` | 8/8 通过，包含修正后的 Windows amd64 原生取消/race/vet、Windows386/WOW64 CGO与结构ABI，以及原有跨平台和旧Go检查 |
+| [42517136819](https://github.com/b1ug/nb1/actions/runs/42517136819) | `7d9978d` | 8/8 通过，新增元数据失败/字段隔离及原生 WCHAR 字节计数检查；同轮包含 daemon 故障状态发布与独立 MCP 依赖更新 |
 
-`0e9d5af` 与 `1ea70d8` 已取得新的原生 Windows 证据。之后的 `7d9978d` 元数据修复尚待新一轮原生 CI，不能把前一轮 8/8 自动扩展到它。字段污染的复现、修复和边界见[元数据审查](windows-hid-metadata-validation.zh-CN.md)。
+`0e9d5af`、`1ea70d8` 与之后的 `7d9978d` 已分别取得新的原生 Windows 证据；最后一行仅覆盖该轮固定源码。字段污染的复现、修复和边界见[元数据审查](windows-hid-metadata-validation.zh-CN.md)。
 
 Windows 原生取消测试使用命名管道制造实际 pending WriteFile，再验证取消、完成收集和关闭顺序。它会执行 Win32 I/O，但不模拟 HID IOCTL，也不需要或验证 USB 设备。通用 Go 租约屏障测试和字符串查询回调测试能在 Mac 上运行；它们不能替代 Windows CGO/ABI 执行。
 
@@ -68,7 +69,7 @@ Go 1.13.15 检查保留的是 GID 的源码兼容下限。当前 Go 在当前 CI
 
 ## 当前仍待验证
 
-1. 用 `7d9978d` 重跑原生矩阵，特别是新增的 Windows 无效 HANDLE 属性失败与 WCHAR 字节长度检查；保留已有取消、枚举 ABI 和旧 Go 回归。
+1. 已完成 `7d9978d` 原生矩阵；后续源码修改继续固定新版本重跑，不将本轮 8/8 外推到之后的提交。
 2. 用 Linux/Windows 实体 HID 验证读取阻塞、写入、设备移除、关闭与重新打开，不把无 USB 的 CI 当成真机证据。
 3. 当前已连接的 Mac + blink(1) mk2 可以验证该组合；物理拔插、非响应设备及更老系统仍需各自记录。没有 blink(1) mk3 真机，不能宣布 mk3 已验证。
 4. 继续将通用传输层、blink(1) SDK 的命令事务与 daemon 的队列/重试策略分开。GID 不因提供原始错误码就自动重试任意 HID 写入。

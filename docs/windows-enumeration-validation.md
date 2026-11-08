@@ -1,5 +1,10 @@
 # Windows enumeration and 32-bit ABI validation
 
+The proposed job below was subsequently implemented in nb1's integration workflow.
+[Run 42517136819](https://github.com/b1ug/nb1/actions/runs/42517136819), pinned to
+GID `7d9978d`, passed all eight jobs, including native Windows amd64 race/vet
+and Windows/386 CGO tests under WOW64. This remains software evidence without USB.
+
 `SP_DEVICE_INTERFACE_DETAIL_DATA_A.cbSize` must describe the native fixed
 structure, rather than a Go pointer. The ANSI structure is 5 bytes on x86 and
 8 bytes on 64-bit Windows. The code uses the C `sizeof` constant and tests that
