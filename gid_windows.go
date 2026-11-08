@@ -65,8 +65,11 @@ static DWORD gid_ioctl_overlapped(uintptr_t handle, DWORD report_type, PVOID buf
     return DeviceIoControl((HANDLE)handle, report_type, buffer, length, buffer, length, &transferred, overlapped) ? ERROR_SUCCESS : gid_last_error();
 }
 
-static BOOLEAN gid_get_attributes(uintptr_t handle, PHIDD_ATTRIBUTES attributes) {
-    return HidD_GetAttributes((HANDLE)handle, attributes);
+static DWORD gid_get_attributes(uintptr_t handle, PHIDD_ATTRIBUTES attributes) {
+    // The attributes contract guarantees BOOLEAN success, not that failure
+    // clears output. Avoid consuming partial output or a prior last-error.
+    SetLastError(ERROR_SUCCESS);
+    return HidD_GetAttributes((HANDLE)handle, attributes) ? ERROR_SUCCESS : gid_last_error();
 }
 
 static BOOLEAN gid_get_manufacturer_string(uintptr_t handle, PVOID buffer, ULONG length) {
@@ -406,25 +409,22 @@ func ByPath(devicePath string) (*DeviceInfo, error) {
 		return nil, errors.New("hid: failed to open device")
 	}
 
-	var attrs C.HIDD_ATTRIBUTES
-	attrs.Size = C.DWORD(unsafe.Sizeof(attrs))
-	C.gid_get_attributes(C.uintptr_t(dev.handle), &attrs)
-
-	devInfo.VendorID = uint16(attrs.VendorID)
-	devInfo.ProductID = uint16(attrs.ProductID)
-	devInfo.VersionNumber = uint16(attrs.VersionNumber)
-
-	const bufLen = 256
-	buff := make([]uint16, bufLen)
-
-	C.gid_get_manufacturer_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
-	devInfo.Manufacturer = syscall.UTF16ToString(buff)
-
-	C.gid_get_product_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
-	devInfo.Product = syscall.UTF16ToString(buff)
-
-	C.gid_get_serial_number_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
-	devInfo.SerialNumber = syscall.UTF16ToString(buff)
+	if err := populateWindowsHIDMetadata(devInfo, windowsHIDMetadataQueries{
+		attributes: func() (uint16, uint16, uint16, error) {
+			return getWindowsHIDAttributes(dev.handle)
+		},
+		manufacturer: func(buffer []uint16) bool {
+			return C.gid_get_manufacturer_string(C.uintptr_t(dev.handle), C.PVOID(unsafe.Pointer(&buffer[0])), windowsHIDStringBufferBytes(buffer)) != 0
+		},
+		product: func(buffer []uint16) bool {
+			return C.gid_get_product_string(C.uintptr_t(dev.handle), C.PVOID(unsafe.Pointer(&buffer[0])), windowsHIDStringBufferBytes(buffer)) != 0
+		},
+		serial: func(buffer []uint16) bool {
+			return C.gid_get_serial_number_string(C.uintptr_t(dev.handle), C.PVOID(unsafe.Pointer(&buffer[0])), windowsHIDStringBufferBytes(buffer)) != 0
+		},
+	}); err != nil {
+		return nil, fmt.Errorf("hid: get device attributes fail: %w", err)
+	}
 
 	var preparsedData C.PHIDP_PREPARSED_DATA
 	if C.gid_get_preparsed_data(C.uintptr_t(dev.handle), &preparsedData) != 0 {
@@ -440,6 +440,19 @@ func ByPath(devicePath string) (*DeviceInfo, error) {
 	}
 
 	return devInfo, nil
+}
+
+func getWindowsHIDAttributes(handle syscall.Handle) (uint16, uint16, uint16, error) {
+	var attrs C.HIDD_ATTRIBUTES
+	attrs.Size = C.DWORD(C.sizeof_HIDD_ATTRIBUTES)
+	if code := C.gid_get_attributes(C.uintptr_t(handle), &attrs); code != C.ERROR_SUCCESS {
+		return 0, 0, 0, syscall.Errno(code)
+	}
+	return uint16(attrs.VendorID), uint16(attrs.ProductID), uint16(attrs.VersionNumber), nil
+}
+
+func windowsHIDStringBufferBytes(buffer []uint16) C.ULONG {
+	return C.ULONG(len(buffer)) * C.ULONG(C.sizeof_WCHAR)
 }
 
 // Devices returns all HID devices which are connected to the system.
