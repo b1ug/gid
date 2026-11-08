@@ -7,13 +7,6 @@ package gid
 #include <CoreFoundation/CoreFoundation.h>
 
 
-static inline CFIndex cfstring_utf8_length(CFStringRef str, CFIndex *need) {
-  CFIndex n, usedBufLen;
-  CFRange rng = CFRangeMake(0, CFStringGetLength(str));
-
-  return CFStringGetBytes(str, rng, kCFStringEncodingUTF8, 0, 0, NULL, 0, need);
-}
-
 void deviceUnpluged(IOHIDDeviceRef osd, IOReturn ret, void* dev);
 */
 import "C"
@@ -21,7 +14,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"unsafe"
 )
 
@@ -143,8 +135,18 @@ type osxDevice struct {
 }
 
 func cfstring(s string) C.CFStringRef {
-	n := C.CFIndex(len(s))
-	return C.CFStringCreateWithBytes(0, *(**C.UInt8)(unsafe.Pointer(&s)), n, C.kCFStringEncodingUTF8, 0)
+	buf := []byte(s)
+	var data *C.UInt8
+	if len(buf) > 0 {
+		data = (*C.UInt8)(unsafe.Pointer(&buf[0]))
+	}
+	return C.CFStringCreateWithBytes(0, data, C.CFIndex(len(buf)), C.kCFStringEncodingUTF8, 0)
+}
+
+func releaseCFString(s C.CFStringRef) {
+	if s != 0 {
+		C.CFRelease(C.CFTypeRef(s))
+	}
 }
 
 func gostring(cfs C.CFStringRef) string {
@@ -152,28 +154,23 @@ func gostring(cfs C.CFStringRef) string {
 		return ""
 	}
 
+	rng := C.CFRange{location: 0, length: C.CFStringGetLength(cfs)}
 	var usedBufLen C.CFIndex
-	n := C.cfstring_utf8_length(cfs, &usedBufLen)
-	if n <= 0 {
+	if C.CFStringGetBytes(cfs, rng, C.kCFStringEncodingUTF8, 0, 0, nil, 0, &usedBufLen) != rng.length || usedBufLen == 0 {
 		return ""
 	}
-	rng := C.CFRange{location: C.CFIndex(0), length: n}
 	buf := make([]byte, int(usedBufLen))
-
-	bufp := unsafe.Pointer(&buf[0])
-	C.CFStringGetBytes(cfs, rng, C.kCFStringEncodingUTF8, 0, 0, (*C.UInt8)(bufp), C.CFIndex(len(buf)), &usedBufLen)
-
-	sh := &reflect.StringHeader{
-		Data: uintptr(bufp),
-		Len:  int(usedBufLen),
+	if C.CFStringGetBytes(cfs, rng, C.kCFStringEncodingUTF8, 0, 0, (*C.UInt8)(unsafe.Pointer(&buf[0])), C.CFIndex(len(buf)), &usedBufLen) != rng.length {
+		return ""
 	}
-	return *(*string)(unsafe.Pointer(sh))
+	return string(buf[:int(usedBufLen)])
 }
 
-func getIntProp(device C.IOHIDDeviceRef, key C.CFStringRef) int32 {
+func getIntProp(device C.IOHIDDeviceRef, key string) int32 {
 	var value int32
-
-	ref := C.IOHIDDeviceGetProperty(device, key)
+	cfKey := cfstring(key)
+	defer releaseCFString(cfKey)
+	ref := C.IOHIDDeviceGetProperty(device, cfKey)
 	if ref != 0 {
 		if C.CFGetTypeID(ref) == C.CFNumberGetTypeID() {
 			C.CFNumberGetValue(C.CFNumberRef(ref), C.kCFNumberSInt32Type, unsafe.Pointer(&value))
@@ -183,30 +180,44 @@ func getIntProp(device C.IOHIDDeviceRef, key C.CFStringRef) int32 {
 	return 0
 }
 
-func getStringProp(device C.IOHIDDeviceRef, key C.CFStringRef) string {
-	s := C.IOHIDDeviceGetProperty(device, key)
+func getStringProp(device C.IOHIDDeviceRef, key string) string {
+	cfKey := cfstring(key)
+	defer releaseCFString(cfKey)
+	s := C.IOHIDDeviceGetProperty(device, cfKey)
 	return gostring(C.CFStringRef(s))
 }
 
 func getPath(osDev C.IOHIDDeviceRef) string {
 	return fmt.Sprintf("%s_%04x_%04x_%08x",
-		getStringProp(osDev, cfstring(C.kIOHIDTransportKey)),
-		uint16(getIntProp(osDev, cfstring(C.kIOHIDVendorIDKey))),
-		uint16(getIntProp(osDev, cfstring(C.kIOHIDProductIDKey))),
-		uint32(getIntProp(osDev, cfstring(C.kIOHIDLocationIDKey))))
+		getStringProp(osDev, C.kIOHIDTransportKey),
+		uint16(getIntProp(osDev, C.kIOHIDVendorIDKey)),
+		uint16(getIntProp(osDev, C.kIOHIDProductIDKey)),
+		uint32(getIntProp(osDev, C.kIOHIDLocationIDKey)))
 }
 
 func iterateDevices(action func(device C.IOHIDDeviceRef) bool) cleanupDeviceManagerFn {
 	mgr := C.IOHIDManagerCreate(C.kCFAllocatorDefault, C.kIOHIDOptionsTypeNone)
+	if mgr == 0 {
+		return func() {}
+	}
+	cleanup := func() {
+		C.IOHIDManagerClose(mgr, C.kIOHIDOptionsTypeNone)
+		C.CFRelease(C.CFTypeRef(mgr))
+	}
 	C.IOHIDManagerSetDeviceMatching(mgr, 0)
-	C.IOHIDManagerOpen(mgr, C.kIOHIDOptionsTypeNone)
+	if C.IOHIDManagerOpen(mgr, C.kIOHIDOptionsTypeNone) != C.kIOReturnSuccess {
+		return cleanup
+	}
 
 	allDevicesSet := C.IOHIDManagerCopyDevices(mgr)
-	if unsafe.Pointer(allDevicesSet) == nil {
-		return func() {}
+	if allDevicesSet == 0 {
+		return cleanup
 	}
 	defer C.CFRelease(C.CFTypeRef(allDevicesSet))
 	devCnt := C.CFSetGetCount(allDevicesSet)
+	if devCnt == 0 {
+		return cleanup
+	}
 	allDevices := make([]unsafe.Pointer, uint64(devCnt))
 	C.CFSetGetValues(allDevicesSet, &allDevices[0])
 
@@ -215,10 +226,7 @@ func iterateDevices(action func(device C.IOHIDDeviceRef) bool) cleanupDeviceMana
 			break
 		}
 	}
-	return func() {
-		C.IOHIDManagerClose(mgr, C.kIOHIDOptionsTypeNone)
-		C.CFRelease(C.CFTypeRef(mgr))
-	}
+	return cleanup
 }
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
@@ -231,15 +239,15 @@ func Devices() <-chan *DeviceInfo {
 
 		iterateDevices(func(device C.IOHIDDeviceRef) bool {
 			result <- &DeviceInfo{
-				VendorID:            uint16(getIntProp(device, cfstring(C.kIOHIDVendorIDKey))),
-				ProductID:           uint16(getIntProp(device, cfstring(C.kIOHIDProductIDKey))),
-				VersionNumber:       uint16(getIntProp(device, cfstring(C.kIOHIDVersionNumberKey))),
-				Manufacturer:        getStringProp(device, cfstring(C.kIOHIDManufacturerKey)),
-				Product:             getStringProp(device, cfstring(C.kIOHIDProductKey)),
-				SerialNumber:        getStringProp(device, cfstring(C.kIOHIDSerialNumberKey)),
-				InputReportLength:   uint16(getIntProp(device, cfstring(C.kIOHIDMaxInputReportSizeKey))),
-				OutputReportLength:  uint16(getIntProp(device, cfstring(C.kIOHIDMaxOutputReportSizeKey))),
-				FeatureReportLength: uint16(getIntProp(device, cfstring(C.kIOHIDMaxFeatureReportSizeKey))),
+				VendorID:            uint16(getIntProp(device, C.kIOHIDVendorIDKey)),
+				ProductID:           uint16(getIntProp(device, C.kIOHIDProductIDKey)),
+				VersionNumber:       uint16(getIntProp(device, C.kIOHIDVersionNumberKey)),
+				Manufacturer:        getStringProp(device, C.kIOHIDManufacturerKey),
+				Product:             getStringProp(device, C.kIOHIDProductKey),
+				SerialNumber:        getStringProp(device, C.kIOHIDSerialNumberKey),
+				InputReportLength:   uint16(getIntProp(device, C.kIOHIDMaxInputReportSizeKey)),
+				OutputReportLength:  uint16(getIntProp(device, C.kIOHIDMaxOutputReportSizeKey)),
+				FeatureReportLength: uint16(getIntProp(device, C.kIOHIDMaxFeatureReportSizeKey)),
 				Path:                getPath(device),
 			}
 			return true
@@ -280,10 +288,11 @@ func (di *DeviceInfo) Open() (Device, error) {
 		}
 		return true
 	})
-	if dev != nil {
-		dev.closeDM = closeDM
+	if dev == nil {
+		closeDM()
+		return nil, err
 	}
-
+	dev.closeDM = closeDM
 	return dev, err
 }
 
