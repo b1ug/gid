@@ -12,6 +12,7 @@ package gid
 #include <hidsdi.h>
 #include <hidclass.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,6 +83,31 @@ static BOOLEAN gid_get_serial_number_string(uintptr_t handle, PVOID buffer, ULON
 
 static BOOLEAN gid_get_preparsed_data(uintptr_t handle, PHIDP_PREPARSED_DATA *data) {
     return HidD_GetPreparsedData((HANDLE)handle, data);
+}
+
+static DWORD gid_get_interface_detail(HDEVINFO set, PSP_DEVICE_INTERFACE_DATA data,
+        PSP_DEVICE_INTERFACE_DETAIL_DATA_A detail, DWORD size, PDWORD required) {
+    if (detail) {
+        if (size < sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A)) {
+            *required = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
+            return ERROR_INSUFFICIENT_BUFFER;
+        }
+        // Packed ANSI x86 has a five-byte native structure. Do not use a Go
+        // pointer size or depend on Go's representation of this packed field.
+        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
+    }
+    return SetupDiGetDeviceInterfaceDetailA(set, data, detail, size, required, NULL)
+        ? ERROR_SUCCESS : gid_last_error();
+}
+
+static DWORD gid_get_registry_property(HDEVINFO set, PSP_DEVINFO_DATA data,
+        DWORD property, PBYTE buffer, DWORD size, PDWORD required) {
+    return SetupDiGetDeviceRegistryPropertyA(set, data, property, NULL, buffer, size, required)
+        ? ERROR_SUCCESS : gid_last_error();
+}
+
+static size_t gid_detail_path_offset(void) {
+    return offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_A, DevicePath);
 }
 */
 import "C"
@@ -287,23 +313,7 @@ func (dev *winDevice) overlapped(handle syscall.Handle, buffer []byte, reportTyp
 	return int(transferred), nil
 }
 
-type callCFn func(buf unsafe.Pointer, bufSize *C.DWORD) unsafe.Pointer
-
-// simple helper function for this Windows "call a function twice to get the amount of space that needs to be allocated" stuff
-func getCString(fnCall callCFn) string {
-	var requiredSize C.DWORD
-	fnCall(nil, &requiredSize)
-	if requiredSize <= 0 {
-		return ""
-	}
-
-	buffer := C.malloc((C.size_t)(requiredSize))
-	defer C.free(buffer)
-
-	strPt := fnCall(buffer, &requiredSize)
-
-	return C.GoString((*C.char)(strPt))
-}
+func windowsDetailHeaderSize() uint32 { return uint32(C.sizeof_SP_DEVICE_INTERFACE_DETAIL_DATA_A) }
 
 func openDevice(info *DeviceInfo, enumerate bool) (*winDevice, error) {
 	access := uint32(syscall.GENERIC_WRITE | syscall.GENERIC_READ)
@@ -328,17 +338,19 @@ func openDevice(info *DeviceInfo, enumerate bool) (*winDevice, error) {
 }
 
 func getDeviceDetails(deviceInfoSet C.HDEVINFO, deviceInterfaceData *C.SP_DEVICE_INTERFACE_DATA) *DeviceInfo {
-	devicePath := getCString(func(buffer unsafe.Pointer, size *C.DWORD) unsafe.Pointer {
-		interfaceDetailData := (*C.SP_DEVICE_INTERFACE_DETAIL_DATA_A)(buffer)
-		if interfaceDetailData != nil {
-			interfaceDetailData.cbSize = C.DWORD(unsafe.Sizeof(interfaceDetailData))
+	devicePath := getCString(func(buffer []byte) (int, uint32, uint32) {
+		var detail *C.SP_DEVICE_INTERFACE_DETAIL_DATA_A
+		if len(buffer) > 0 {
+			if uint32(len(buffer)) < windowsDetailHeaderSize() {
+				return 0, 0, uint32(C.ERROR_INSUFFICIENT_BUFFER)
+			}
+			detail = (*C.SP_DEVICE_INTERFACE_DETAIL_DATA_A)(unsafe.Pointer(&buffer[0]))
+			// The C wrapper sets cbSize using this same native sizeof, without
+			// assuming the packed struct can be represented identically in Go.
 		}
-		C.SetupDiGetDeviceInterfaceDetailA(deviceInfoSet, deviceInterfaceData, interfaceDetailData, *size, size, nil)
-		if interfaceDetailData != nil {
-			return (unsafe.Pointer)(&interfaceDetailData.DevicePath[0])
-		} else {
-			return nil
-		}
+		var required C.DWORD
+		code := C.gid_get_interface_detail(deviceInfoSet, deviceInterfaceData, detail, C.DWORD(len(buffer)), &required)
+		return int(C.gid_detail_path_offset()), uint32(required), uint32(code)
 	})
 	if devicePath == "" {
 		return nil
@@ -354,16 +366,10 @@ func getDeviceDetails(deviceInfoSet C.HDEVINFO, deviceInterfaceData *C.SP_DEVICE
 			break
 		}
 
-		classStr := getCString(func(buffer unsafe.Pointer, size *C.DWORD) unsafe.Pointer {
-			C.SetupDiGetDeviceRegistryPropertyA(deviceInfoSet, &devinfoData, C.SPDRP_CLASS, nil, (*C.BYTE)(buffer), *size, size)
-			return buffer
-		})
+		classStr := getWindowsRegistryString(deviceInfoSet, &devinfoData, C.SPDRP_CLASS)
 
 		if classStr == "HIDClass" {
-			driverName := getCString(func(buffer unsafe.Pointer, size *C.DWORD) unsafe.Pointer {
-				C.SetupDiGetDeviceRegistryPropertyA(deviceInfoSet, &devinfoData, C.SPDRP_DRIVER, nil, (*C.BYTE)(buffer), *size, size)
-				return buffer
-			})
+			driverName := getWindowsRegistryString(deviceInfoSet, &devinfoData, C.SPDRP_DRIVER)
 			isHID = driverName != ""
 			break
 		}
@@ -374,6 +380,18 @@ func getDeviceDetails(deviceInfoSet C.HDEVINFO, deviceInterfaceData *C.SP_DEVICE
 	}
 	d, _ := ByPath(devicePath)
 	return d
+}
+
+func getWindowsRegistryString(set C.HDEVINFO, data *C.SP_DEVINFO_DATA, property C.DWORD) string {
+	return getCString(func(buffer []byte) (int, uint32, uint32) {
+		var pointer *C.BYTE
+		if len(buffer) > 0 {
+			pointer = (*C.BYTE)(unsafe.Pointer(&buffer[0]))
+		}
+		var required C.DWORD
+		code := C.gid_get_registry_property(set, data, property, pointer, C.DWORD(len(buffer)), &required)
+		return 0, uint32(required), uint32(code)
+	})
 }
 
 // ByPath gets the device which is bound to the given path.
