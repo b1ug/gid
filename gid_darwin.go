@@ -332,8 +332,11 @@ func (dev *osxDevice) setReport(typ C.IOHIDReportType, data []byte) error {
 	if dev.osDevice == 0 {
 		return errDeviceClosed
 	}
+	if err := validateReportBuffer(data); err != nil {
+		return err
+	}
 
-	var reportNo = int32(data[0]) // data should have at least 1 byte
+	var reportNo = int32(data[0])
 	if reportNo == 0 {
 		data = data[1:]
 	}
@@ -352,9 +355,12 @@ func (dev *osxDevice) getReport(typ C.IOHIDReportType, buf []byte) (int, error) 
 	if dev.osDevice == 0 {
 		return 0, errDeviceClosed
 	}
+	if err := validateReportBuffer(buf); err != nil {
+		return 0, err
+	}
 
 	var (
-		reportNo  = int32(buf[0]) // buf should have at least 1 byte
+		reportNo  = int32(buf[0])
 		reportLen = C.CFIndex(len(buf))
 	)
 	if reportNo == 0 {

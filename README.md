@@ -57,6 +57,32 @@ and concurrent access still require separate tests with the intended hardware.
 `CGO_ENABLED=0` selects an unsupported-platform stub; a successful build in that
 mode is not evidence that the native HID backend works.
 
+## Report buffers and device lifetime
+
+Output and feature reports start with a report ID; use zero for an unnumbered
+report and include at least one payload byte after that zero. Empty buffers and
+a lone zero ID return an error. This also replaces Linux's former empty-buffer
+no-op. Linux input `Read` remains a stream read and accepts any nonempty buffer.
+
+Windows pads writes to the collection's reported size and rejects oversized
+data instead of silently truncating it. Counted reads return only the number of
+bytes placed in the caller's buffer, with `io.ErrShortBuffer` if necessary.
+Windows input-report IOCTLs may return a zero byte count despite filling the
+buffer; that native count and the filled data are preserved. Input `Read` has
+platform-specific behavior and is not a portable event-stream contract.
+
+On macOS, synchronous I/O and `Close` hold the same lock for the complete native
+operation. Repeated `Close` is safe, and closed-handle operations return errors.
+The synchronous backend does not register asynchronous removal callbacks;
+disconnects surface as I/O errors, and callers must still call `Close` and open
+a new device after re-enumeration. `Close` waits for pending native I/O and has
+no guaranteed deadline. Physical unplug/replug still requires hardware testing.
+
+This is not a cross-platform concurrent-close guarantee: callers on Linux and
+Windows must serialize device access and `Close`. Their native lifetime and
+blocking-read cancellation require separate work. No operation provides a
+portable context or timeout contract yet.
+
 ## Credits and License
 
 [![License: MIT](https://img.shields.io/:license-MIT-blue.svg)](http://opensource.org/licenses/MIT)

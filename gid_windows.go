@@ -164,6 +164,9 @@ func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int)
 		return 0, fmt.Errorf("hid: retrieve result fail: %w", syscall.GetLastError())
 	}
 
+	if reportType == ioctlHidGetInputReport {
+		return copyInputReport(data, buf, int(read))
+	}
 	return copyReadReport(data, buf, int(read))
 }
 

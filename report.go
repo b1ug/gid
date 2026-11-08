@@ -54,3 +54,15 @@ func copyReadReport(data, report []byte, read int) (int, error) {
 	}
 	return n, nil
 }
+
+// Windows HID class may complete GET_INPUT_REPORT with Information=0 even
+// though the report buffer is filled. Preserve that buffer and the native zero
+// count; do not invent an actual report length from the collection maximum.
+// https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidclass/ni-hidclass-ioctl_hid_get_input_report
+func copyInputReport(data, report []byte, read int) (int, error) {
+	if read == 0 {
+		copy(data, report)
+		return 0, nil
+	}
+	return copyReadReport(data, report, read)
+}

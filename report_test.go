@@ -112,3 +112,16 @@ func TestCopyReadReportRejectsImpossibleNativeLength(t *testing.T) {
 		}
 	}
 }
+
+func TestInputReportWithoutNativeByteCount(t *testing.T) {
+	data := make([]byte, 2)
+	n, err := copyInputReport(data, []byte{1, 42, 43}, 0)
+	if n != 0 || err != nil || !bytes.Equal(data, []byte{1, 42}) {
+		t.Fatalf("input without byte count = %d, %v, %v", n, err, data)
+	}
+	// Feature reports and counted input reports retain actual-length semantics.
+	n, err = copyInputReport(data, []byte{1, 42, 43}, 3)
+	if n != len(data) || err != io.ErrShortBuffer {
+		t.Fatalf("counted input = %d, %v; want %d, short buffer", n, err, len(data))
+	}
+}
