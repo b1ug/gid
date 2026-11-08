@@ -12,15 +12,56 @@ package gid
 #include <hidsdi.h>
 #include <hidclass.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Windows handles are opaque integer values, not Go pointers. Keep the
 // integer-to-HANDLE conversion in C so Go's GC never sees a fake pointer.
-static BOOL gid_get_overlapped_result(uintptr_t handle, LPOVERLAPPED overlapped, LPDWORD transferred, BOOL wait) {
-    return GetOverlappedResult((HANDLE)handle, overlapped, transferred, wait);
+static DWORD gid_last_error(void) {
+    DWORD error = GetLastError();
+    return error ? error : ERROR_GEN_FAILURE;
 }
 
-static BOOLEAN gid_set_feature(uintptr_t handle, PVOID buffer, ULONG length) {
-    return HidD_SetFeature((HANDLE)handle, buffer, length);
+static DWORD gid_get_overlapped_result(uintptr_t handle, LPOVERLAPPED overlapped, LPDWORD transferred, BOOL wait) {
+    return GetOverlappedResult((HANDLE)handle, overlapped, transferred, wait) ? ERROR_SUCCESS : gid_last_error();
+}
+
+static DWORD gid_set_feature(uintptr_t handle, PVOID buffer, ULONG length) {
+    return HidD_SetFeature((HANDLE)handle, buffer, length) ? ERROR_SUCCESS : gid_last_error();
+}
+
+// Each simultaneous I/O owns an event and an OVERLAPPED outside the Go heap.
+// They remain allocated, together with the C-owned report buffer, until the
+// operation's completion has been collected even when CancelIoEx was requested.
+static LPOVERLAPPED gid_new_overlapped(DWORD *error) {
+    LPOVERLAPPED overlapped = (LPOVERLAPPED)calloc(1, sizeof(OVERLAPPED));
+    if (!overlapped) {
+        *error = ERROR_NOT_ENOUGH_MEMORY;
+        return NULL;
+    }
+    overlapped->hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!overlapped->hEvent) {
+        *error = gid_last_error();
+        free(overlapped);
+        return NULL;
+    }
+    *error = ERROR_SUCCESS;
+    return overlapped;
+}
+
+static void gid_free_overlapped(LPOVERLAPPED overlapped) {
+    CloseHandle(overlapped->hEvent);
+    free(overlapped);
+}
+
+static DWORD gid_write_overlapped(uintptr_t handle, PVOID buffer, DWORD length, LPOVERLAPPED overlapped) {
+    DWORD transferred = 0;
+    return WriteFile((HANDLE)handle, buffer, length, &transferred, overlapped) ? ERROR_SUCCESS : gid_last_error();
+}
+
+static DWORD gid_ioctl_overlapped(uintptr_t handle, DWORD report_type, PVOID buffer, DWORD length, LPOVERLAPPED overlapped) {
+    DWORD transferred = 0;
+    return DeviceIoControl((HANDLE)handle, report_type, buffer, length, buffer, length, &transferred, overlapped) ? ERROR_SUCCESS : gid_last_error();
 }
 
 static BOOLEAN gid_get_attributes(uintptr_t handle, PHIDD_ATTRIBUTES attributes) {
@@ -59,26 +100,61 @@ const (
 )
 
 type winDevice struct {
-	handle syscall.Handle
-	info   *DeviceInfo
+	handle   syscall.Handle
+	info     *DeviceInfo
+	lifetime windowsLifetime
 }
 
-// checks if the handle of the device is valid
+func validWindowsHandle(handle syscall.Handle) bool {
+	return handle != 0 && handle != syscall.InvalidHandle
+}
+
 func (dev *winDevice) isValid() bool {
-	return dev.handle != 0 && dev.handle != syscall.InvalidHandle
+	_, err := dev.acquireHandle()
+	if err != nil {
+		return false
+	}
+	dev.lifetime.release()
+	return true
 }
 
-func (dev *winDevice) Close() {
-	if dev.isValid() {
-		syscall.CloseHandle(dev.handle)
-		dev.handle = syscall.InvalidHandle
+// acquireHandle pins the handle through the entire native operation, completion
+// wait, response copy and error conversion. Callers must release the lease.
+func (dev *winDevice) acquireHandle() (syscall.Handle, error) {
+	if !dev.lifetime.acquire() {
+		return syscall.InvalidHandle, errDeviceClosed
 	}
+	if !validWindowsHandle(dev.handle) {
+		dev.lifetime.release()
+		return syscall.InvalidHandle, errDeviceClosed
+	}
+	return dev.handle, nil
+}
+
+// Close requests cancellation, then waits for all operations before closing the
+// handle once. Cancellation is not completion and has no hard deadline; a
+// synchronous HidD_SetFeature or an unresponsive driver can still block Close.
+func (dev *winDevice) Close() {
+	dev.lifetime.close(func() {
+		if validWindowsHandle(dev.handle) {
+			// CancelIoEx is available in the Go syscall API since Go 1.1. Ignore
+			// ERROR_NOT_FOUND: active operations may already have completed.
+			_ = syscall.CancelIoEx(dev.handle, nil)
+		}
+	}, func() {
+		if validWindowsHandle(dev.handle) {
+			_ = syscall.CloseHandle(dev.handle)
+			dev.handle = syscall.InvalidHandle
+		}
+	})
 }
 
 func (dev *winDevice) Write(data []byte) error {
-	if !dev.isValid() {
-		return errDeviceClosed
+	handle, err := dev.acquireHandle()
+	if err != nil {
+		return err
 	}
+	defer dev.lifetime.release()
 	// Windows requires the collection's complete output report size.
 	outSize := int(dev.info.OutputReportLength)
 	buffer, err := prepareWriteReport(data, outSize)
@@ -86,31 +162,22 @@ func (dev *winDevice) Write(data []byte) error {
 		return err
 	}
 
-	ol := new(syscall.Overlapped)
-	if err := syscall.WriteFile(dev.handle, buffer, nil, ol); err != nil {
-		// IO Pending is ok we simply wait for it to finish a few lines below
-		// all other errors should be reported.
-		if !errors.Is(err, syscall.ERROR_IO_PENDING) {
-			return err
-		}
+	written, err := dev.overlapped(handle, buffer, 0, true)
+	if err != nil {
+		return err
 	}
-
-	// now wait for the overlapped device access to finish.
-	var written C.DWORD
-	if C.gid_get_overlapped_result(C.uintptr_t(dev.handle), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &written, C.TRUE) == 0 {
-		return syscall.GetLastError()
-	}
-
-	if int(written) != outSize {
+	if written != outSize {
 		return errors.New("hid: written bytes mismatch")
 	}
 	return nil
 }
 
 func (dev *winDevice) WriteFeature(data []byte) error {
-	if !dev.isValid() {
-		return errDeviceClosed
+	handle, err := dev.acquireHandle()
+	if err != nil {
+		return err
 	}
+	defer dev.lifetime.release()
 	buffer, err := prepareWriteReport(data, int(dev.info.FeatureReportLength))
 	if err != nil {
 		return err
@@ -118,11 +185,10 @@ func (dev *winDevice) WriteFeature(data []byte) error {
 
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature
 	cBuffer := (C.PVOID)(unsafe.Pointer(&buffer[0]))
-	if C.gid_set_feature(C.uintptr_t(dev.handle), cBuffer, C.ULONG(len(buffer))) != 0 {
-		return nil
-	} else {
-		return fmt.Errorf("hid: set feature fail: %w", syscall.GetLastError())
+	if code := C.gid_set_feature(C.uintptr_t(handle), cBuffer, C.ULONG(len(buffer))); code != C.ERROR_SUCCESS {
+		return fmt.Errorf("hid: set feature fail: %w", syscall.Errno(code))
 	}
+	return nil
 }
 
 func (dev *winDevice) WriteInterrupt(endpoint byte, data []byte) (int, error) {
@@ -130,26 +196,31 @@ func (dev *winDevice) WriteInterrupt(endpoint byte, data []byte) (int, error) {
 }
 
 func (dev *winDevice) Read(data []byte) (int, error) {
-	if !dev.isValid() {
-		return 0, errDeviceClosed
+	handle, err := dev.acquireHandle()
+	if err != nil {
+		return 0, err
 	}
+	defer dev.lifetime.release()
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidclass/ni-hidclass-ioctl_hid_get_input_report
-	return dev.readReport(data, ioctlHidGetInputReport, int(dev.info.InputReportLength))
+	return dev.readReport(handle, data, ioctlHidGetInputReport, int(dev.info.InputReportLength))
 }
 
 func (dev *winDevice) ReadFeature(data []byte) (int, error) {
-	if !dev.isValid() {
-		return 0, errDeviceClosed
+	handle, err := dev.acquireHandle()
+	if err != nil {
+		return 0, err
 	}
+	defer dev.lifetime.release()
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidclass/ni-hidclass-ioctl_hid_get_feature
-	return dev.readReport(data, ioctlHidGetFeature, int(dev.info.FeatureReportLength))
+	return dev.readReport(handle, data, ioctlHidGetFeature, int(dev.info.FeatureReportLength))
 }
 
 func (dev *winDevice) ReadInterrupt(endpoint byte, data []byte) (int, error) {
 	return 0, errNotImplemented
 }
 
-func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int) (int, error) {
+// readReport is called with the lifetime lease retained by Read/ReadFeature.
+func (dev *winDevice) readReport(handle syscall.Handle, data []byte, reportType uint32, minBufSize int) (int, error) {
 	if err := validateReportBuffer(data); err != nil {
 		return 0, err
 	}
@@ -163,37 +234,57 @@ func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int)
 		copy(buf, data)
 	}
 
-	// call the Windows API
-	var (
-		ol            = new(C.OVERLAPPED)
-		bytesReturned uint32
-	)
-	if err := syscall.DeviceIoControl(
-		dev.handle,
-		reportType,
-		&buf[0],
-		uint32(len(buf)),
-		&buf[0],
-		uint32(len(buf)),
-		&bytesReturned,
-		(*syscall.Overlapped)(unsafe.Pointer(ol)),
-	); err != nil {
-		// IO Pending is ok we simply wait for it to finish, a few lines below all other errors should be reported.
-		if !errors.Is(err, syscall.ERROR_IO_PENDING) {
-			return 0, fmt.Errorf("hid: send device control fail: %w", err)
-		}
-	}
-
-	// now wait for the overlapped device access to finish.
-	var read C.DWORD
-	if C.gid_get_overlapped_result(C.uintptr_t(dev.handle), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &read, C.TRUE) == 0 {
-		return 0, fmt.Errorf("hid: retrieve result fail: %w", syscall.GetLastError())
+	read, err := dev.overlapped(handle, buf, reportType, false)
+	if err != nil {
+		return 0, err
 	}
 
 	if reportType == ioctlHidGetInputReport {
-		return copyInputReport(data, buf, int(read))
+		return copyInputReport(data, buf, read)
 	}
-	return copyReadReport(data, buf, int(read))
+	return copyReadReport(data, buf, read)
+}
+
+// overlapped keeps all asynchronously retained memory in C allocations. The
+// caller retains a handle lease until this returns and response/error processing
+// finishes. Requesting cancellation never releases those resources early.
+func (dev *winDevice) overlapped(handle syscall.Handle, buffer []byte, reportType uint32, write bool) (int, error) {
+	payload := C.CBytes(buffer)
+	defer C.free(payload)
+	var code C.DWORD
+	ol := C.gid_new_overlapped(&code)
+	if ol == nil {
+		return 0, syscall.Errno(code)
+	}
+	defer C.gid_free_overlapped(ol)
+	if write {
+		code = C.gid_write_overlapped(C.uintptr_t(handle), payload, C.DWORD(len(buffer)), ol)
+	} else {
+		code = C.gid_ioctl_overlapped(C.uintptr_t(handle), C.DWORD(reportType), payload, C.DWORD(len(buffer)), ol)
+	}
+	if code != C.ERROR_SUCCESS && syscall.Errno(code) != syscall.ERROR_IO_PENDING {
+		if write {
+			return 0, syscall.Errno(code)
+		}
+		return 0, fmt.Errorf("hid: send device control fail: %w", syscall.Errno(code))
+	}
+	dev.lifetime.afterIssue(func() {
+		_ = syscall.CancelIoEx(handle, (*syscall.Overlapped)(unsafe.Pointer(ol)))
+	})
+	var transferred C.DWORD
+	if code = C.gid_get_overlapped_result(C.uintptr_t(handle), ol, &transferred, C.TRUE); code != C.ERROR_SUCCESS {
+		if write {
+			return 0, syscall.Errno(code)
+		}
+		return 0, fmt.Errorf("hid: retrieve result fail: %w", syscall.Errno(code))
+	}
+	if !write {
+		if uint64(transferred) > uint64(len(buffer)) {
+			return 0, errors.New("hid: invalid native report length")
+		}
+		C.memcpy(unsafe.Pointer(&buffer[0]), payload, C.size_t(len(buffer)))
+	}
+	return int(transferred), nil
 }
 
 type callCFn func(buf unsafe.Pointer, bufSize *C.DWORD) unsafe.Pointer
