@@ -16,6 +16,20 @@ import (
 )
 
 func ioReturnToErr(ret C.IOReturn) error {
+	return darwinIOError(int32(ret))
+}
+
+// The C boundary retains the signed IOReturn representation. Exposing the low
+// 32 bits avoids sign extension when an application records the native code.
+func darwinIOError(code int32) error {
+	cause := ioReturnCause(C.IOReturn(code))
+	if cause == nil {
+		return nil
+	}
+	return &NativeError{Platform: "darwin", Code: uint64(uint32(code)), Err: cause}
+}
+
+func ioReturnCause(ret C.IOReturn) error {
 	switch ret {
 	case C.kIOReturnSuccess:
 		return nil
