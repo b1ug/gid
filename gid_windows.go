@@ -39,19 +39,26 @@ func (dev *winDevice) h() C.HANDLE {
 
 // checks if the handle of the device is valid
 func (dev *winDevice) isValid() bool {
-	return dev.handle != syscall.InvalidHandle
+	return dev.handle != 0 && dev.handle != syscall.InvalidHandle
 }
 
 func (dev *winDevice) Close() {
-	syscall.CloseHandle(dev.handle)
-	dev.handle = syscall.InvalidHandle
+	if dev.isValid() {
+		syscall.CloseHandle(dev.handle)
+		dev.handle = syscall.InvalidHandle
+	}
 }
 
 func (dev *winDevice) Write(data []byte) error {
-	// first make sure we send the correct amount of data to the device
+	if !dev.isValid() {
+		return errDeviceClosed
+	}
+	// Windows requires the collection's complete output report size.
 	outSize := int(dev.info.OutputReportLength)
-	buffer := make([]byte, outSize)
-	copy(buffer, data)
+	buffer, err := prepareWriteReport(data, outSize)
+	if err != nil {
+		return err
+	}
 
 	ol := new(syscall.Overlapped)
 	if err := syscall.WriteFile(dev.handle, buffer, nil, ol); err != nil {
@@ -75,9 +82,13 @@ func (dev *winDevice) Write(data []byte) error {
 }
 
 func (dev *winDevice) WriteFeature(data []byte) error {
-	// ensure the correct amount of data
-	buffer := make([]byte, dev.info.FeatureReportLength)
-	copy(buffer, data)
+	if !dev.isValid() {
+		return errDeviceClosed
+	}
+	buffer, err := prepareWriteReport(data, int(dev.info.FeatureReportLength))
+	if err != nil {
+		return err
+	}
 
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature
 	cBuffer := (C.PVOID)(unsafe.Pointer(&buffer[0]))
@@ -93,11 +104,17 @@ func (dev *winDevice) WriteInterrupt(endpoint byte, data []byte) (int, error) {
 }
 
 func (dev *winDevice) Read(data []byte) (int, error) {
+	if !dev.isValid() {
+		return 0, errDeviceClosed
+	}
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidclass/ni-hidclass-ioctl_hid_get_input_report
 	return dev.readReport(data, ioctlHidGetInputReport, int(dev.info.InputReportLength))
 }
 
 func (dev *winDevice) ReadFeature(data []byte) (int, error) {
+	if !dev.isValid() {
+		return 0, errDeviceClosed
+	}
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidclass/ni-hidclass-ioctl_hid_get_feature
 	return dev.readReport(data, ioctlHidGetFeature, int(dev.info.FeatureReportLength))
 }
@@ -107,17 +124,17 @@ func (dev *winDevice) ReadInterrupt(endpoint byte, data []byte) (int, error) {
 }
 
 func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int) (int, error) {
-	// make sure the buffer is large enough
-	var (
-		buf     []byte
-		resized bool
-	)
-	if minBufSize > 0 && len(data) < minBufSize {
+	if err := validateReportBuffer(data); err != nil {
+		return 0, err
+	}
+	if minBufSize <= 0 {
+		return 0, errReportUnavailable
+	}
+	// A collection can contain reports smaller than its maximum report size.
+	buf := data
+	if len(data) < minBufSize {
 		buf = make([]byte, minBufSize)
 		copy(buf, data)
-		resized = true
-	} else {
-		buf = data
 	}
 
 	// call the Windows API
@@ -147,11 +164,7 @@ func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int)
 		return 0, fmt.Errorf("hid: retrieve result fail: %w", syscall.GetLastError())
 	}
 
-	// if the buffer was resized, copy the data back
-	if resized {
-		copy(data, buf)
-	}
-	return int(read), nil
+	return copyReadReport(data, buf, int(read))
 }
 
 type callCFn func(buf unsafe.Pointer, bufSize *C.DWORD) unsafe.Pointer

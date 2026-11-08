@@ -34,13 +34,17 @@ type DeviceInfo struct {
 type Device interface {
 	// Close closes the device and release all kept resources.
 	Close()
-	// Write to the device (technically a HID report with type 'output' is sent to the device)
+	// Write sends an output report. The first byte is the report ID, or zero
+	// for an unnumbered report. A zero ID must be followed by report data.
+	// Empty buffers are rejected.
 	Write([]byte) error
-	// WriteFeature to the device (technically a HID report with type 'feature' is sent to the device)
+	// WriteFeature sends a feature report using the same buffer format as Write.
 	WriteFeature([]byte) error
 	// Read from the device
 	Read([]byte) (int, error)
-	// ReadFeature from the device
+	// ReadFeature retrieves a feature report. The first byte selects the report
+	// ID (zero for unnumbered reports); allow space for this ID in the buffer.
+	// Empty buffers and a zero ID without room for data are rejected.
 	ReadFeature([]byte) (int, error)
 }
 
@@ -123,8 +127,9 @@ func drainDevices(ch <-chan *DeviceInfo) {
 // for enumeration, causing crashes if called concurrently.
 //
 // For more details, see:
-//   https://developer.apple.com/documentation/iokit/1438371-iohidmanagersetdevicematching
-//   > "subsequent calls will cause the hid manager to release previously enumerated devices"
+//
+//	https://developer.apple.com/documentation/iokit/1438371-iohidmanagersetdevicematching
+//	> "subsequent calls will cause the hid manager to release previously enumerated devices"
 var enumerateLock sync.Mutex
 
 var (

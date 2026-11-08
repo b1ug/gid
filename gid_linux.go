@@ -109,10 +109,6 @@ func (dev *linuxDevice) Close() {
 // Write will send the data on the first OUT endpoint, if one exists. If it does
 // not, it will send the data through the Control Endpoint (Endpoint 0).
 func (dev *linuxDevice) Write(b []byte) error {
-	// Abort if nothing to write
-	if len(b) == 0 {
-		return nil
-	}
 	// Abort if device closed in between
 	dev.lock.Lock()
 	device := dev.device
@@ -120,6 +116,9 @@ func (dev *linuxDevice) Write(b []byte) error {
 
 	if device == nil {
 		return errDeviceClosed
+	}
+	if err := validateReportBuffer(b); err != nil {
+		return err
 	}
 	report := b
 
@@ -158,10 +157,6 @@ func (dev *linuxDevice) Write(b []byte) error {
 // which do not use numbered reports), followed by the report data (16 bytes).
 // In this example, the length passed in would be 17.
 func (dev *linuxDevice) WriteFeature(b []byte) error {
-	// Abort if nothing to write
-	if len(b) == 0 {
-		return nil
-	}
 	// Abort if device closed in between
 	dev.lock.Lock()
 	device := dev.device
@@ -169,6 +164,9 @@ func (dev *linuxDevice) WriteFeature(b []byte) error {
 
 	if device == nil {
 		return errDeviceClosed
+	}
+	if err := validateReportBuffer(b); err != nil {
+		return err
 	}
 
 	// Send the feature report
@@ -199,10 +197,6 @@ func (dev *linuxDevice) WriteInterrupt(endpoint byte, data []byte) (int, error) 
 
 // Read retrieves an input report from a HID device.
 func (dev *linuxDevice) Read(b []byte) (int, error) {
-	// Abort if nothing to read
-	if len(b) == 0 {
-		return 0, nil
-	}
 	// Abort if device closed in between
 	dev.lock.Lock()
 	device := dev.device
@@ -210,6 +204,10 @@ func (dev *linuxDevice) Read(b []byte) (int, error) {
 
 	if device == nil {
 		return 0, errDeviceClosed
+	}
+	// HIDAPI input reads receive reports rather than selecting a report ID.
+	if len(b) == 0 {
+		return 0, errEmptyReportBuffer
 	}
 	// Execute the read operation
 	read := int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
@@ -239,10 +237,6 @@ func (dev *linuxDevice) Read(b []byte) (int, error) {
 // sure to allow space for this extra byte in []b. Upon return, the first byte
 // will still contain the Report ID, and the report data will start in b[1].
 func (dev *linuxDevice) ReadFeature(b []byte) (int, error) {
-	// Abort if we don't have anywhere to write the results
-	if len(b) == 0 {
-		return 0, nil
-	}
 	// Abort if device closed in between
 	dev.lock.Lock()
 	device := dev.device
@@ -250,6 +244,9 @@ func (dev *linuxDevice) ReadFeature(b []byte) (int, error) {
 
 	if device == nil {
 		return 0, errDeviceClosed
+	}
+	if err := validateReportBuffer(b); err != nil {
+		return 0, err
 	}
 
 	// Retrieve the feature report
