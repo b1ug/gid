@@ -2,44 +2,72 @@ name: Build
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [master]
   pull_request:
-    branches: [ "master" ]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
+env:
+  CGO_ENABLED: "1"
+  GOWORK: "off"
+
 jobs:
-  build:
-    name: Go ${{ matrix.go-ver }} on ${{ matrix.vm-os }}
-    runs-on: ${{ matrix.vm-os }}
+  native:
+    name: Native / ${{ matrix.os }} / Go ${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        vm-os: [ubuntu-20.04, ubuntu-22.04, macos-11, macos-12, macos-13, windows-2019, windows-2022]
-        go-ver:
-          - "1.13.15"
-          - "1.14.15"
-          - "1.15.15"
-          - "1.16.15"
-          - "1.17.13"
-          - "1.18.10"
-          - "1.19.13"
-          - "1.20.11"
-          - "1.21.4"
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2022]
+        go: ["1.26.x", "1.27.x"]
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/checkout@v7
         with:
-          go-version: ${{ matrix.go-ver }}
-      - name: Go Build
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Record native toolchain
         run: |
-          gcc --version
           go version
-          go build -v .
-      - name: Go Test
-        if: ${{ matrix.vm-os != 'windows-2022' }}
+          go env GOOS GOARCH CGO_ENABLED CC
+          gcc --version
+      - name: Build native backend
+        run: go build -v ./...
+      - name: Test without opening hardware
+        run: go test -race -count=1 -timeout=2m -v ./...
+
+  legacy-source:
+    name: Legacy source / ubuntu-22.04 / Go 1.13.15
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.13.15"
+          cache: false
+      - name: Record legacy toolchain
         run: |
-          go test -cover -covermode=atomic -v -count 1 ./...
+          go version
+          go env GOOS GOARCH CGO_ENABLED CC
+          gcc --version
+      - name: Build and test Go 1.13 source compatibility
+        run: |
+          go build -v ./...
+          go test -count=1 -timeout=2m -v ./...

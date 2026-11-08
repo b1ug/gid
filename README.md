@@ -34,6 +34,29 @@ The package has been verified to work with the following devices:
 
 This package is designed to support minimum USB HID functionality needed for ThingM blink(1) on major platforms only. Therefore, not all HID features have been implemented.
 
+## Continuous integration and hardware tests
+
+The native CI jobs build the CGO backend and run tests (including the Go race detector)
+on Ubuntu 24.04 amd64/arm64, macOS 15 arm64/Intel, and Windows Server 2022 amd64,
+with Go 1.26.x and 1.27.x. The runner labels are explicit; see GitHub's
+[current standard runner list](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories).
+Go 1.13.15 is checked separately on Ubuntu 22.04 to retain the module's source
+compatibility floor. This does not establish a minimum supported OS version or
+verify old systems, Raspberry Pi OS, or device I/O on hosted runners.
+
+By default, tests may enumerate HID devices but do not open them. To opt in to
+an open/close smoke test, select an exact device path from `gid.Devices()`:
+
+```sh
+GID_TEST_DEVICE_PATH='your-platform-specific-device-path' go test -run '^TestOpenSelectedDevice$' -v .
+```
+
+The selected-device test fails if that device cannot be found or opened. It does
+not write reports. Report I/O, firmware compatibility, unplug/replug behavior,
+and concurrent access still require separate tests with the intended hardware.
+`CGO_ENABLED=0` selects an unsupported-platform stub; a successful build in that
+mode is not evidence that the native HID backend works.
+
 ## Credits and License
 
 [![License: MIT](https://img.shields.io/:license-MIT-blue.svg)](http://opensource.org/licenses/MIT)

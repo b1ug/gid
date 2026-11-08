@@ -1,6 +1,7 @@
 package gid_test
 
 import (
+	"os"
 	"sync"
 	"testing"
 
@@ -40,18 +41,21 @@ func TestListAll(t *testing.T) {
 	}
 }
 
-func TestOpenFirst(t *testing.T) {
-	dev := gid.ListFirstDevice(nil)
-	if dev == nil {
-		t.Logf("no devices found")
-	} else {
-		t.Logf("found 1st device: %+v", dev)
-		d, err := dev.Open()
-		if err != nil {
-			t.Logf("can't open 1st device: %v", err)
-		} else {
-			t.Logf("opened 1st device: %+v", d)
-			d.Close()
-		}
+func TestOpenSelectedDevice(t *testing.T) {
+	path := os.Getenv("GID_TEST_DEVICE_PATH")
+	if path == "" {
+		t.Skip("set GID_TEST_DEVICE_PATH to opt in to opening a specific HID device")
 	}
+	dev, err := gid.ByPath(path)
+	if err != nil {
+		t.Fatalf("find selected device: %v", err)
+	}
+	d, err := dev.Open()
+	if err != nil {
+		t.Fatalf("open selected device: %v", err)
+	}
+	if d == nil {
+		t.Fatal("Open returned a nil device without an error")
+	}
+	defer d.Close()
 }
