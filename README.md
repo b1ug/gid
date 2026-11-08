@@ -13,20 +13,21 @@ Divergent from comprehensive USB HID packages, `gid` chiefly focuses on offering
 
 ## Compatible Operating Systems
 
-`gid` is designed to work seamlessly with the following systems:
+The native backends target the following systems:
 
 * macOS: Through its native IOKit framework
 * Linux: Leverages libusb 1.0+
 * Windows: Utilizes native Windows HID library
 
-We've tested the package on different platforms to ensure its compatibility:
+The original project recorded tests on these systems. These historical results
+do not establish compatibility of the current candidate with those OS versions:
 
-* macOS Venture 13.5.2 (on Apple M1 Chip)
+* macOS Ventura 13.5.2 (on Apple M1 Chip)
 * Windows 10 x64 - Build 19045
 * Windows 11 x64 - Build 22621
 * Raspberry Pi OS 64-bit Bullseye (on Raspberry Pi 3 Model B)
 
-The package has been verified to work with the following devices:
+The original hardware test target was:
 
 * ThingM blink(1) mk2
 
@@ -36,13 +37,20 @@ This package is designed to support minimum USB HID functionality needed for Thi
 
 ## Continuous integration and hardware tests
 
-The native CI jobs build the CGO backend and run tests (including the Go race detector)
+The repository's native CI configuration builds the CGO backend and runs tests (including the Go race detector)
 on Ubuntu 24.04 amd64/arm64, macOS 15 arm64/Intel, and Windows Server 2022 amd64,
 with Go 1.26.x and 1.27.x. The runner labels are explicit; see GitHub's
 [current standard runner list](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories).
 Go 1.13.15 is checked separately on Ubuntu 22.04 to retain the module's source
 compatibility floor. This does not establish a minimum supported OS version or
 verify old systems, Raspberry Pi OS, or device I/O on hosted runners.
+
+The current development candidate is on `validation/runtime-gid`; it is separate
+from the frozen [PR #2](https://github.com/b1ug/gid/pull/2) at `f520a7e`.
+CI results apply to their exact checked-out commits. In particular, earlier
+successful runtime runs do not validate the newer Windows cancellation and
+enumeration changes. See the [Chinese candidate validation record](docs/candidate-validation.zh-CN.md)
+for the commits, failed attempt, local checks and remaining hardware work.
 
 By default, tests may enumerate HID devices but do not open them. To opt in to
 an open/close smoke test, select an exact device path from `gid.Devices()`:
@@ -78,10 +86,33 @@ disconnects surface as I/O errors, and callers must still call `Close` and open
 a new device after re-enumeration. `Close` waits for pending native I/O and has
 no guaranteed deadline. Physical unplug/replug still requires hardware testing.
 
-This is not a cross-platform concurrent-close guarantee: callers on Linux and
-Windows must serialize device access and `Close`. Their native lifetime and
-blocking-read cancellation require separate work. No operation provides a
-portable context or timeout contract yet.
+In the current Linux candidate, every implemented I/O operation pins the native
+handle through the call and error-string copy. `Close` rejects new operations,
+waits for active leases and disposes once. Input `Read` uses internal 100 ms
+native wait slices to observe closing while retaining its blocking public
+behavior. Reads and writes can overlap; a write that causes input is not blocked
+behind the waiting read. The slice is not a close deadline: native calls, the
+vendored clock behavior and the read-thread join can still delay completion.
+
+In the current Windows candidate, `Close` publishes closing, requests
+`CancelIoEx`, waits for active operations and closes the handle once. Each
+overlapped operation retains its own C-allocated payload, `OVERLAPPED` and event
+until native completion is collected. A late-issued operation also requests its
+own cancellation if closing has begun. Requesting cancellation does not release
+resources early. Synchronous `HidD_SetFeature` and driver behavior can still
+delay `Close`; native Windows validation of the newest candidate is pending.
+The enumeration candidate also bounds string copying and uses the native C
+detail-structure size; see the [Windows validation notes](docs/windows-enumeration-validation.md).
+
+These lifetime guards do not serialize a multi-call application protocol. A
+request-write/response-read transaction still needs an application-level owner
+or lock. No operation provides a portable context or timeout contract, and
+disconnect recovery still requires closing, re-enumerating and opening a new
+handle. Physical Linux/Windows USB and blink(1) mk3 behavior remain unverified.
+
+Darwin native errors now preserve their existing text while exposing the raw
+IOKit code through `NativePlatform()` / `NativeCode()`. Other platforms' errors
+have not been unified into that diagnostic contract. See [native error details](docs/native-errors.md).
 
 ## Credits and License
 
