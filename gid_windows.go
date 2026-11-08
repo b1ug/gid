@@ -11,6 +11,37 @@ package gid
 #include <setupapi.h>
 #include <hidsdi.h>
 #include <hidclass.h>
+#include <stdint.h>
+
+// Windows handles are opaque integer values, not Go pointers. Keep the
+// integer-to-HANDLE conversion in C so Go's GC never sees a fake pointer.
+static BOOL gid_get_overlapped_result(uintptr_t handle, LPOVERLAPPED overlapped, LPDWORD transferred, BOOL wait) {
+    return GetOverlappedResult((HANDLE)handle, overlapped, transferred, wait);
+}
+
+static BOOLEAN gid_set_feature(uintptr_t handle, PVOID buffer, ULONG length) {
+    return HidD_SetFeature((HANDLE)handle, buffer, length);
+}
+
+static BOOLEAN gid_get_attributes(uintptr_t handle, PHIDD_ATTRIBUTES attributes) {
+    return HidD_GetAttributes((HANDLE)handle, attributes);
+}
+
+static BOOLEAN gid_get_manufacturer_string(uintptr_t handle, PVOID buffer, ULONG length) {
+    return HidD_GetManufacturerString((HANDLE)handle, buffer, length);
+}
+
+static BOOLEAN gid_get_product_string(uintptr_t handle, PVOID buffer, ULONG length) {
+    return HidD_GetProductString((HANDLE)handle, buffer, length);
+}
+
+static BOOLEAN gid_get_serial_number_string(uintptr_t handle, PVOID buffer, ULONG length) {
+    return HidD_GetSerialNumberString((HANDLE)handle, buffer, length);
+}
+
+static BOOLEAN gid_get_preparsed_data(uintptr_t handle, PHIDP_PREPARSED_DATA *data) {
+    return HidD_GetPreparsedData((HANDLE)handle, data);
+}
 */
 import "C"
 
@@ -30,11 +61,6 @@ const (
 type winDevice struct {
 	handle syscall.Handle
 	info   *DeviceInfo
-}
-
-// returns the cast handle of the device
-func (dev *winDevice) h() C.HANDLE {
-	return (C.HANDLE)((unsafe.Pointer)(dev.handle))
 }
 
 // checks if the handle of the device is valid
@@ -71,7 +97,7 @@ func (dev *winDevice) Write(data []byte) error {
 
 	// now wait for the overlapped device access to finish.
 	var written C.DWORD
-	if C.GetOverlappedResult(dev.h(), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &written, C.TRUE) == 0 {
+	if C.gid_get_overlapped_result(C.uintptr_t(dev.handle), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &written, C.TRUE) == 0 {
 		return syscall.GetLastError()
 	}
 
@@ -92,7 +118,7 @@ func (dev *winDevice) WriteFeature(data []byte) error {
 
 	// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature
 	cBuffer := (C.PVOID)(unsafe.Pointer(&buffer[0]))
-	if C.HidD_SetFeature(dev.h(), cBuffer, C.ULONG(len(buffer))) != 0 {
+	if C.gid_set_feature(C.uintptr_t(dev.handle), cBuffer, C.ULONG(len(buffer))) != 0 {
 		return nil
 	} else {
 		return fmt.Errorf("hid: set feature fail: %w", syscall.GetLastError())
@@ -160,7 +186,7 @@ func (dev *winDevice) readReport(data []byte, reportType uint32, minBufSize int)
 
 	// now wait for the overlapped device access to finish.
 	var read C.DWORD
-	if C.GetOverlappedResult(dev.h(), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &read, C.TRUE) == 0 {
+	if C.gid_get_overlapped_result(C.uintptr_t(dev.handle), (*C.OVERLAPPED)((unsafe.Pointer)(ol)), &read, C.TRUE) == 0 {
 		return 0, fmt.Errorf("hid: retrieve result fail: %w", syscall.GetLastError())
 	}
 
@@ -273,7 +299,7 @@ func ByPath(devicePath string) (*DeviceInfo, error) {
 
 	var attrs C.HIDD_ATTRIBUTES
 	attrs.Size = C.DWORD(unsafe.Sizeof(attrs))
-	C.HidD_GetAttributes(dev.h(), &attrs)
+	C.gid_get_attributes(C.uintptr_t(dev.handle), &attrs)
 
 	devInfo.VendorID = uint16(attrs.VendorID)
 	devInfo.ProductID = uint16(attrs.ProductID)
@@ -282,17 +308,17 @@ func ByPath(devicePath string) (*DeviceInfo, error) {
 	const bufLen = 256
 	buff := make([]uint16, bufLen)
 
-	C.HidD_GetManufacturerString(dev.h(), (C.PVOID)(&buff[0]), bufLen)
+	C.gid_get_manufacturer_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
 	devInfo.Manufacturer = syscall.UTF16ToString(buff)
 
-	C.HidD_GetProductString(dev.h(), (C.PVOID)(&buff[0]), bufLen)
+	C.gid_get_product_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
 	devInfo.Product = syscall.UTF16ToString(buff)
 
-	C.HidD_GetSerialNumberString(dev.h(), (C.PVOID)(&buff[0]), bufLen)
+	C.gid_get_serial_number_string(C.uintptr_t(dev.handle), (C.PVOID)(&buff[0]), bufLen)
 	devInfo.SerialNumber = syscall.UTF16ToString(buff)
 
 	var preparsedData C.PHIDP_PREPARSED_DATA
-	if C.HidD_GetPreparsedData(dev.h(), &preparsedData) != 0 {
+	if C.gid_get_preparsed_data(C.uintptr_t(dev.handle), &preparsedData) != 0 {
 		var caps C.HIDP_CAPS
 
 		if C.HidP_GetCaps(preparsedData, &caps) == C.HIDP_STATUS_SUCCESS {
