@@ -1,8 +1,13 @@
+//go:build darwin && cgo
+// +build darwin,cgo
+
 package gid
 
 import (
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -28,6 +33,67 @@ func TestDarwinStringRoundTrip(t *testing.T) {
 				t.Errorf("round trip = %q, want %q", got, tc.value)
 			}
 		})
+	}
+}
+
+func TestDarwinClosedDeviceIO(t *testing.T) {
+	dev := &osxDevice{}
+	dev.Close()
+	dev.Close()
+
+	for _, tc := range []struct {
+		name string
+		call func([]byte) error
+	}{
+		{"Write", dev.Write},
+		{"WriteFeature", dev.WriteFeature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call([]byte{1, 0}); err != errDeviceClosed {
+				t.Fatalf("closed device error = %v, want %v", err, errDeviceClosed)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		call func([]byte) (int, error)
+	}{
+		{"Read", dev.Read},
+		{"ReadFeature", dev.ReadFeature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := tc.call([]byte{1, 0})
+			if n != 0 || err != errDeviceClosed {
+				t.Fatalf("closed device result = (%d, %v), want (0, %v)", n, err, errDeviceClosed)
+			}
+		})
+	}
+}
+
+func TestDarwinConcurrentCloseAndClosedIO(t *testing.T) {
+	// No native handle is used: this test is safe on hosts with arbitrary HID
+	// devices. A retained manager still needs to be released exactly once.
+	var cleanupCalls int32
+	dev := &osxDevice{closeDM: func() { atomic.AddInt32(&cleanupCalls, 1) }}
+	var workers sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := 0; j < 32; j++ {
+				dev.Close()
+				if err := dev.WriteFeature([]byte{1, 0}); err != errDeviceClosed {
+					t.Errorf("WriteFeature after close = %v", err)
+				}
+				if n, err := dev.ReadFeature([]byte{1, 0}); n != 0 || err != errDeviceClosed {
+					t.Errorf("ReadFeature after close = (%d, %v)", n, err)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	if got := atomic.LoadInt32(&cleanupCalls); got != 1 {
+		t.Fatalf("manager cleanup calls = %d, want 1", got)
 	}
 }
 

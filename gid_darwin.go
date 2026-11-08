@@ -5,15 +5,13 @@ package gid
 
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
-
-
-void deviceUnpluged(IOHIDDeviceRef osd, IOReturn ret, void* dev);
 */
 import "C"
 
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
@@ -129,9 +127,12 @@ func ioReturnToErr(ret C.IOReturn) error {
 
 type cleanupDeviceManagerFn func()
 type osxDevice struct {
-	osDevice     C.IOHIDDeviceRef
-	disconnected bool
-	closeDM      cleanupDeviceManagerFn
+	// mu protects the native handle for the entire duration of each synchronous
+	// I/O call, including Close. Releasing it before calling IOKit would allow
+	// another goroutine to close and release the handle while it is in use.
+	mu       sync.Mutex
+	osDevice C.IOHIDDeviceRef
+	closeDM  cleanupDeviceManagerFn
 }
 
 func cfstring(s string) C.CFStringRef {
@@ -233,25 +234,33 @@ func iterateDevices(action func(device C.IOHIDDeviceRef) bool) cleanupDeviceMana
 func Devices() <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
-		enumerateLock.Lock()
-		defer enumerateLock.Unlock()
 		defer close(result)
 
-		iterateDevices(func(device C.IOHIDDeviceRef) bool {
-			result <- &DeviceInfo{
-				VendorID:            uint16(getIntProp(device, C.kIOHIDVendorIDKey)),
-				ProductID:           uint16(getIntProp(device, C.kIOHIDProductIDKey)),
-				VersionNumber:       uint16(getIntProp(device, C.kIOHIDVersionNumberKey)),
-				Manufacturer:        getStringProp(device, C.kIOHIDManufacturerKey),
-				Product:             getStringProp(device, C.kIOHIDProductKey),
-				SerialNumber:        getStringProp(device, C.kIOHIDSerialNumberKey),
-				InputReportLength:   uint16(getIntProp(device, C.kIOHIDMaxInputReportSizeKey)),
-				OutputReportLength:  uint16(getIntProp(device, C.kIOHIDMaxOutputReportSizeKey)),
-				FeatureReportLength: uint16(getIntProp(device, C.kIOHIDMaxFeatureReportSizeKey)),
-				Path:                getPath(device),
-			}
-			return true
-		})()
+		// Finish enumeration before sending results. A caller may Open a
+		// received device while the channel is full; Open needs the same lock.
+		var infos []*DeviceInfo
+		func() {
+			enumerateLock.Lock()
+			defer enumerateLock.Unlock()
+			iterateDevices(func(device C.IOHIDDeviceRef) bool {
+				infos = append(infos, &DeviceInfo{
+					VendorID:            uint16(getIntProp(device, C.kIOHIDVendorIDKey)),
+					ProductID:           uint16(getIntProp(device, C.kIOHIDProductIDKey)),
+					VersionNumber:       uint16(getIntProp(device, C.kIOHIDVersionNumberKey)),
+					Manufacturer:        getStringProp(device, C.kIOHIDManufacturerKey),
+					Product:             getStringProp(device, C.kIOHIDProductKey),
+					SerialNumber:        getStringProp(device, C.kIOHIDSerialNumberKey),
+					InputReportLength:   uint16(getIntProp(device, C.kIOHIDMaxInputReportSizeKey)),
+					OutputReportLength:  uint16(getIntProp(device, C.kIOHIDMaxOutputReportSizeKey)),
+					FeatureReportLength: uint16(getIntProp(device, C.kIOHIDMaxFeatureReportSizeKey)),
+					Path:                getPath(device),
+				})
+				return true
+			})()
+		}()
+		for _, info := range infos {
+			result <- info
+		}
 	}()
 	return result
 }
@@ -271,6 +280,9 @@ func ByPath(path string) (*DeviceInfo, error) {
 
 // Open opens the device for reading and writing.
 func (di *DeviceInfo) Open() (Device, error) {
+	enumerateLock.Lock()
+	defer enumerateLock.Unlock()
+
 	err := errDeviceNotFound
 	var dev *osxDevice
 	closeDM := iterateDevices(func(device C.IOHIDDeviceRef) bool {
@@ -280,7 +292,10 @@ func (di *DeviceInfo) Open() (Device, error) {
 				C.CFRetain(C.CFTypeRef(device))
 				dev = &osxDevice{osDevice: device}
 				err = nil
-				C.IOHIDDeviceRegisterRemovalCallback(device, (C.IOHIDCallback)(unsafe.Pointer(C.deviceUnpluged)), unsafe.Pointer(dev))
+				// This backend uses synchronous I/O and has no scheduled run loop.
+				// Let those calls report removal errors instead of registering an
+				// asynchronous callback that retains a Go pointer in IOKit.
+				// Callers must still Close the device to release its resources.
 			} else {
 				err = ioReturnToErr(res)
 			}
@@ -296,19 +311,12 @@ func (di *DeviceInfo) Open() (Device, error) {
 	return dev, err
 }
 
-//export deviceUnpluged
-func deviceUnpluged(osdev C.IOHIDDeviceRef, result C.IOReturn, dev unsafe.Pointer) {
-	od := (*osxDevice)(dev)
-	od.disconnected = true
-	od.Close()
-}
-
 func (dev *osxDevice) Close() {
-	if !dev.disconnected {
-		C.IOHIDDeviceClose(dev.osDevice, C.kIOHIDOptionsTypeSeizeDevice)
-		dev.disconnected = true
-	}
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+
 	if dev.osDevice != 0 {
+		C.IOHIDDeviceClose(dev.osDevice, C.kIOHIDOptionsTypeSeizeDevice)
 		C.CFRelease(C.CFTypeRef(dev.osDevice))
 		dev.osDevice = 0
 	}
@@ -319,25 +327,29 @@ func (dev *osxDevice) Close() {
 }
 
 func (dev *osxDevice) setReport(typ C.IOHIDReportType, data []byte) error {
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	if dev.osDevice == 0 {
+		return errDeviceClosed
+	}
+
 	var reportNo = int32(data[0]) // data should have at least 1 byte
 	if reportNo == 0 {
 		data = data[1:]
 	}
 
-	if !dev.disconnected {
-		res := C.IOHIDDeviceSetReport(dev.osDevice, typ, C.CFIndex(reportNo), (*C.uint8_t)(&data[0]), C.CFIndex(len(data)))
+	res := C.IOHIDDeviceSetReport(dev.osDevice, typ, C.CFIndex(reportNo), (*C.uint8_t)(&data[0]), C.CFIndex(len(data)))
 
-		if res == C.kIOReturnSuccess {
-			return nil
-		}
-		return ioReturnToErr(res)
+	if res == C.kIOReturnSuccess {
+		return nil
 	}
-
-	return errDeviceClosed
+	return ioReturnToErr(res)
 }
 
 func (dev *osxDevice) getReport(typ C.IOHIDReportType, buf []byte) (int, error) {
-	if dev.disconnected {
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	if dev.osDevice == 0 {
 		return 0, errDeviceClosed
 	}
 
