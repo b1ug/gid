@@ -52,8 +52,9 @@ passed all eight jobs with GID `7d9978d`, including Windows amd64 and 386/WOW64
 software tests. See the [Chinese candidate validation record](docs/candidate-validation.zh-CN.md)
 for the commits, failed attempt, local checks and remaining hardware work.
 
-By default, tests may enumerate HID devices but do not open them. To opt in to
-an open/close smoke test, select an exact device path from `gid.Devices()`:
+By default, tests do not enumerate or open host HID devices. Real enumeration
+requires `GID_TEST_ENUMERATE=1`. To opt in to an open/close smoke test, select an
+exact device path from an explicitly authorized `gid.Devices()` enumeration:
 
 ```sh
 GID_TEST_DEVICE_PATH='your-platform-specific-device-path' go test -run '^TestOpenSelectedDevice$' -v .
@@ -126,6 +127,15 @@ selected path. Real host enumeration
 tests require `GID_TEST_ENUMERATE=1`, and actual device opening still requires
 `GID_TEST_DEVICE_PATH`. Skipped hardware tests are not hardware validation.
 See the [Darwin matching and test boundaries](docs/darwin-device-matching.zh-CN.md).
+
+On Linux, `FindDevices(vendor, product)` passes IDs to HIDAPI before its
+string-query device opens, then retains exact Go equality: zero IDs in the
+public API are literal values, even though native HIDAPI uses them as wildcard
+candidates. `Devices()` keeps full discovery. The embedded libusb can still
+attempt earlier USB-node read/write access on old or unavailable sysfs paths;
+this is not a promise that discovery never opens unrelated devices. Windows
+discovery uses zero-access metadata handles, not generic read/write handles.
+See the [Linux discovery scope and software validation](docs/linux-discovery-permissions.zh-CN.md).
 
 ## Credits and License
 

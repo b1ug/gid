@@ -80,6 +80,8 @@ func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
 // Zero IDs match literally in returned metadata; they are not wildcards.
 // Darwin prefilters nonzero IDs before collecting metadata, without opening
 // a whole HID manager, then preserves the historical Go equality check.
+// Linux passes IDs to HIDAPI before its string-query opens; generic discovery
+// may still access usbfs on systems without sufficient sysfs metadata.
 func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
 	return filterDeviceIDs(devicesByID(vendor, product), vendor, product)
 }

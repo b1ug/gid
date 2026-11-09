@@ -1,5 +1,5 @@
-//go:build !darwin || !cgo || ios
-// +build !darwin !cgo ios
+//go:build (!darwin && !linux) || !cgo || ios
+// +build !darwin,!linux !cgo ios
 
 package gid
 

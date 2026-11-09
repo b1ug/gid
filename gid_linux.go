@@ -16,6 +16,13 @@ import (
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
 func Devices() <-chan *DeviceInfo {
+	return devicesByID(0, 0)
+}
+
+// devicesByID narrows HIDAPI's string-query opens before the Go equality filter.
+// HIDAPI treats zero as a wildcard candidate; FindDevices still returns exact
+// IDs, including zero. Devices intentionally retains the full enumeration.
+func devicesByID(vendor, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
 		enumerateLock.Lock()
@@ -23,7 +30,7 @@ func Devices() <-chan *DeviceInfo {
 		defer close(result)
 
 		// Gather all device infos and ensure they are freed before returning
-		head := C.hid_enumerate(C.ushort(0), C.ushort(0))
+		head := C.hid_enumerate(C.ushort(vendor), C.ushort(product))
 		if head == nil {
 			return
 		}
