@@ -9,35 +9,102 @@ package gid
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
 
-// Matching numbers are retained by the dictionary, then our temporary number
-// references are released. A NULL result is allocation failure, not wildcard.
+// Nonzero matching numbers are retained by the dictionary, then temporary
+// references are released. Legacy metadata maps missing/non-number IDs to 0,
+// whereas IOKit numeric 0 does not match an absent property. Leave zero fields
+// to the final Go equality/path check. NULL is allocation failure, not wildcard.
 static CFMutableDictionaryRef gid_device_matching(uint16_t vendor, uint16_t product) {
     CFMutableDictionaryRef matching = CFDictionaryCreateMutable(
         kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks);
     if (!matching) return NULL;
-    int32_t vendor_value = vendor;
-    int32_t product_value = product;
-    CFNumberRef vendor_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &vendor_value);
-    if (!vendor_number) { CFRelease(matching); return NULL; }
-    CFNumberRef product_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &product_value);
-    if (!product_number) { CFRelease(vendor_number); CFRelease(matching); return NULL; }
-    CFDictionarySetValue(matching, CFSTR(kIOHIDVendorIDKey), vendor_number);
-    CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), product_number);
-    CFRelease(vendor_number);
-    CFRelease(product_number);
+    if (vendor != 0) {
+        int32_t value = vendor;
+        CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &value);
+        if (!number) { CFRelease(matching); return NULL; }
+        CFDictionarySetValue(matching, CFSTR(kIOHIDVendorIDKey), number);
+        CFRelease(number);
+    }
+    if (product != 0) {
+        int32_t value = product;
+        CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &value);
+        if (!number) { CFRelease(matching); return NULL; }
+        CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), number);
+        CFRelease(number);
+    }
     return matching;
 }
 
 // Read only CoreFoundation data. This lets software tests inspect the actual
 // native matching dictionary without creating a manager or enumerating HID.
-static int gid_matching_values(CFDictionaryRef matching, int32_t *vendor, int32_t *product) {
-    if (!matching || CFDictionaryGetCount(matching) != 2) return 0;
+static int gid_matching_values(CFDictionaryRef matching, int32_t *vendor, int32_t *product, uint8_t *present) {
+    if (!matching) return 0;
     CFTypeRef v = CFDictionaryGetValue(matching, CFSTR(kIOHIDVendorIDKey));
     CFTypeRef p = CFDictionaryGetValue(matching, CFSTR(kIOHIDProductIDKey));
-    return v && p && CFGetTypeID(v) == CFNumberGetTypeID() && CFGetTypeID(p) == CFNumberGetTypeID()
-        && CFNumberGetValue((CFNumberRef)v, kCFNumberSInt32Type, vendor)
-        && CFNumberGetValue((CFNumberRef)p, kCFNumberSInt32Type, product);
+    *vendor = 0; *product = 0; *present = 0;
+    if (v) {
+        if (CFGetTypeID(v) != CFNumberGetTypeID() || !CFNumberGetValue((CFNumberRef)v, kCFNumberSInt32Type, vendor)) return 0;
+        *present |= 1;
+    }
+    if (p) {
+        if (CFGetTypeID(p) != CFNumberGetTypeID() || !CFNumberGetValue((CFNumberRef)p, kCFNumberSInt32Type, product)) return 0;
+        *present |= 2;
+    }
+    return CFDictionaryGetCount(matching) == ((v ? 1 : 0) + (p ? 1 : 0));
+}
+
+// Preserve getIntProp's historical normalization, independently testable with
+// CF data only. A missing or non-number property becomes metadata ID zero.
+static int32_t gid_integer_property(CFTypeRef property) {
+    int32_t value = 0;
+    if (property && CFGetTypeID(property) == CFNumberGetTypeID()) {
+        CFNumberGetValue((CFNumberRef)property, kCFNumberSInt32Type, &value);
+    }
+    return value;
+}
+
+// Pure-CF test fixtures: kind 0=missing, 1=non-number, 2=numeric zero,
+// 3=numeric value. No manager, service lookup or native HID handle is involved.
+static CFMutableDictionaryRef gid_property_fixture(int vendor_kind, int product_kind, int32_t vendor, int32_t product) {
+    CFMutableDictionaryRef properties = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (!properties) return NULL;
+    const CFStringRef keys[] = { CFSTR(kIOHIDVendorIDKey), CFSTR(kIOHIDProductIDKey) };
+    int kinds[] = {vendor_kind, product_kind};
+    int32_t values[] = {vendor, product};
+    for (int i=0; i<2; i++) {
+        if (kinds[i] == 0) continue;
+        if (kinds[i] == 1) {
+            CFDictionarySetValue(properties, keys[i], CFSTR("not a numeric HID ID"));
+        } else {
+            int32_t value = kinds[i] == 2 ? 0 : values[i];
+            CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &value);
+            if (!number) { CFRelease(properties); return NULL; }
+            CFDictionarySetValue(properties, keys[i], number);
+            CFRelease(number);
+        }
+    }
+    return properties;
+}
+
+static void gid_property_fixture_ids(CFDictionaryRef properties, int32_t *vendor, int32_t *product) {
+    *vendor = gid_integer_property(CFDictionaryGetValue(properties, CFSTR(kIOHIDVendorIDKey)));
+    *product = gid_integer_property(CFDictionaryGetValue(properties, CFSTR(kIOHIDProductIDKey)));
+}
+
+// Software model of Apple's CompareProperty: an omitted condition is allowed;
+// a present numeric condition cannot equal a missing/non-number property.
+static int gid_property_fixture_matches(CFDictionaryRef matching, CFDictionaryRef properties) {
+    if (!matching || !properties) return 0;
+    const CFStringRef keys[] = { CFSTR(kIOHIDVendorIDKey), CFSTR(kIOHIDProductIDKey) };
+    for (int i=0; i<2; i++) {
+        CFTypeRef expected = CFDictionaryGetValue(matching, keys[i]);
+        if (expected) {
+            CFTypeRef actual = CFDictionaryGetValue(properties, keys[i]);
+            if (!actual || !CFEqual(expected, actual)) return 0;
+        }
+    }
+    return 1;
 }
 */
 import "C"
@@ -216,17 +283,10 @@ func gostring(cfs C.CFStringRef) string {
 }
 
 func getIntProp(device C.IOHIDDeviceRef, key string) int32 {
-	var value int32
 	cfKey := cfstring(key)
 	defer releaseCFString(cfKey)
 	ref := C.IOHIDDeviceGetProperty(device, cfKey)
-	if ref != 0 {
-		if C.CFGetTypeID(ref) == C.CFNumberGetTypeID() {
-			C.CFNumberGetValue(C.CFNumberRef(ref), C.kCFNumberSInt32Type, unsafe.Pointer(&value))
-			return value
-		}
-	}
-	return 0
+	return int32(C.gid_integer_property(ref))
 }
 
 func getStringProp(device C.IOHIDDeviceRef, key string) string {
@@ -253,10 +313,25 @@ func (d *darwinMatchingDictionary) close() {
 	}
 }
 
-func (d darwinMatchingDictionary) values() (int32, int32, bool) {
+func (d darwinMatchingDictionary) values() (int32, int32, uint8, bool) {
 	var vendor, product C.int32_t
-	ok := C.gid_matching_values(C.CFDictionaryRef(d.ref), &vendor, &product)
-	return int32(vendor), int32(product), ok != 0
+	var present C.uint8_t
+	ok := C.gid_matching_values(C.CFDictionaryRef(d.ref), &vendor, &product, &present)
+	return int32(vendor), int32(product), uint8(present), ok != 0
+}
+
+func darwinPropertyFixture(vendorKind, productKind int, vendor, product int32) darwinMatchingDictionary {
+	return darwinMatchingDictionary{ref: C.gid_property_fixture(C.int(vendorKind), C.int(productKind), C.int32_t(vendor), C.int32_t(product))}
+}
+
+func (d darwinMatchingDictionary) normalizedIDs() darwinDeviceIDs {
+	var vendor, product C.int32_t
+	C.gid_property_fixture_ids(C.CFDictionaryRef(d.ref), &vendor, &product)
+	return darwinDeviceIDs{vendor: uint16(vendor), product: uint16(product)}
+}
+
+func (d darwinMatchingDictionary) acceptsFixture(properties darwinMatchingDictionary) bool {
+	return C.gid_property_fixture_matches(C.CFDictionaryRef(d.ref), C.CFDictionaryRef(properties.ref)) != 0
 }
 
 func matchingDictionary(ids *darwinDeviceIDs, create func(darwinDeviceIDs) darwinMatchingDictionary) (darwinMatchingDictionary, error) {

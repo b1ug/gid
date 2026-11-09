@@ -4,6 +4,7 @@
 package gid
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -117,34 +118,106 @@ func TestDarwinOpenMissingDevice(t *testing.T) {
 	}
 }
 
-func TestDarwinNativeMatchingDictionaryUsesExactNumericIDs(t *testing.T) {
+func TestDarwinNativeMatchingDictionaryPrefiltersOnlyNonzeroIDs(t *testing.T) {
 	for _, ids := range []darwinDeviceIDs{{0, 0}, {0, 0x01ed}, {0x27b8, 0}, {0x27b8, 0x01ed}, {0xffff, 0xffff}} {
 		dictionary, err := matchingDictionary(&ids, createMatchingDictionary)
 		if err != nil {
 			t.Fatal(err)
 		}
-		vendor, product, ok := dictionary.values()
-		if !ok || vendor != int32(ids.vendor) || product != int32(ids.product) {
-			t.Fatalf("actual CF dictionary IDs=(%d,%d,%t), want (%d,%d)", vendor, product, ok, ids.vendor, ids.product)
+		vendor, product, present, ok := dictionary.values()
+		var wantPresent uint8
+		if ids.vendor != 0 {
+			wantPresent |= 1
+		}
+		if ids.product != 0 {
+			wantPresent |= 2
+		}
+		if !ok || dictionary.ref == 0 || vendor != int32(ids.vendor) || product != int32(ids.product) || present != wantPresent {
+			t.Fatalf("actual CF dictionary IDs=(%d,%d,mask=%d,%t), want (%d,%d,mask=%d)", vendor, product, present, ok, ids.vendor, ids.product, wantPresent)
 		}
 		dictionary.close()
 		dictionary.close()
-		if _, _, ok := dictionary.values(); ok {
+		if _, _, _, ok := dictionary.values(); ok {
 			t.Fatal("released dictionary still exposes native data")
 		}
 	}
 }
 
 func TestDarwinMatchingAllocationFailureNeverBecomesWildcard(t *testing.T) {
-	ids := darwinDeviceIDs{vendor: 0x27b8, product: 0x01ed}
 	calls := 0
 	fail := func(darwinDeviceIDs) darwinMatchingDictionary { calls++; return darwinMatchingDictionary{} }
-	dictionary, err := matchingDictionary(&ids, fail)
-	if err == nil || dictionary.ref != 0 || calls != 1 {
-		t.Fatalf("allocation failure silently became all-device matching: %v calls=%d", err, calls)
+	for _, ids := range []darwinDeviceIDs{{vendor: 0x27b8, product: 0x01ed}, {0, 0}} {
+		dictionary, err := matchingDictionary(&ids, fail)
+		if err == nil || dictionary.ref != 0 {
+			t.Fatalf("allocation failure silently became all-device matching: %v calls=%d", err, calls)
+		}
 	}
-	dictionary, err = matchingDictionary(nil, fail)
-	if err != nil || dictionary.ref != 0 || calls != 1 {
+	dictionary, err := matchingDictionary(nil, fail)
+	if err != nil || dictionary.ref != 0 || calls != 2 {
 		t.Fatal("explicit generic metadata discovery changed historical wildcard matching")
+	}
+}
+
+func TestDarwinZeroIDMetadataCompatibilityWithMissingAndNonNumberProperties(t *testing.T) {
+	// These are CF dictionaries plus a software model of Apple's matching
+	// comparison, not actual HID devices or a kernel/IOHIDManager exercise.
+	names := []string{"missing", "non_number", "numeric_zero", "nonzero"}
+	for vendorKind, vendorName := range names {
+		for productKind, productName := range names {
+			t.Run(vendorName+"/"+productName, func(t *testing.T) {
+				properties := darwinPropertyFixture(vendorKind, productKind, 0x27b8, 0x01ed)
+				if properties.ref == 0 {
+					t.Fatal("CF property fixture allocation failed")
+				}
+				defer properties.close()
+				metadata := properties.normalizedIDs()
+				wantMetadata := darwinDeviceIDs{}
+				if vendorKind == 3 {
+					wantMetadata.vendor = 0x27b8
+				}
+				if productKind == 3 {
+					wantMetadata.product = 0x01ed
+				}
+				if metadata != wantMetadata {
+					t.Fatalf("historical missing/non-number to zero changed: %+v want %+v", metadata, wantMetadata)
+				}
+				for _, wanted := range []darwinDeviceIDs{{0, 0}, {0, 0x01ed}, {0x27b8, 0}, {0x27b8, 0x01ed}} {
+					matching, err := matchingDictionary(&wanted, createMatchingDictionary)
+					if err != nil {
+						t.Fatal(err)
+					}
+					candidate := matching.acceptsFixture(properties)
+					matching.close()
+					input := make(chan *DeviceInfo, 1)
+					if candidate {
+						input <- &DeviceInfo{VendorID: metadata.vendor, ProductID: metadata.product}
+					}
+					close(input)
+					matches := 0
+					for range filterDeviceIDs(input, wanted.vendor, wanted.product) {
+						matches++
+					}
+					oldMatches := metadata == wanted // previous all-metadata Go filtering
+					if (matches == 1) != oldMatches {
+						t.Fatalf("native prefilter lost/added old result: wanted=%+v metadata=%+v candidate=%t count=%d", wanted, metadata, candidate, matches)
+					}
+				}
+				// Open uses the same candidates and retains the exact original
+				// Path check. Validate selection policy without DeviceInfo.Open.
+				path := fmt.Sprintf("USB_%04x_%04x_00100000", metadata.vendor, metadata.product)
+				ids, err := darwinOpenIDs(&DeviceInfo{Path: path, VendorID: metadata.vendor, ProductID: metadata.product})
+				if err != nil || ids != metadata {
+					t.Fatalf("zero-ID path policy changed: %+v %v", ids, err)
+				}
+				matching, err := matchingDictionary(&ids, createMatchingDictionary)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !matching.acceptsFixture(properties) {
+					t.Fatal("Open's ID prefilter excludes the original normalized path")
+				}
+				matching.close()
+			})
+		}
 	}
 }

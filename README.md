@@ -118,9 +118,11 @@ IOKit code through `NativePlatform()` / `NativeCode()`. Other platforms' errors
 have not been unified into that diagnostic contract. See [native error details](docs/native-errors.md).
 
 The Darwin metadata candidate no longer opens a whole HID manager while
-enumerating. `FindDevices` matches exact VID/PID values in IOKit, including exact
-zero IDs; `Devices` retains all-device metadata discovery. `DeviceInfo.Open`
-narrows by IDs before opening the exact selected path. Real host enumeration
+enumerating. `FindDevices` prefilters nonzero VID/PID values in IOKit and retains
+exact Go filtering for zero metadata IDs, including legacy missing/non-number
+properties normalized to zero. `Devices` retains all-device metadata discovery.
+`DeviceInfo.Open` uses the same candidate policy and opens only the exact
+selected path. Real host enumeration
 tests require `GID_TEST_ENUMERATE=1`, and actual device opening still requires
 `GID_TEST_DEVICE_PATH`. Skipped hardware tests are not hardware validation.
 See the [Darwin matching and test boundaries](docs/darwin-device-matching.zh-CN.md).
