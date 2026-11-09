@@ -1,3 +1,6 @@
+//go:build darwin && cgo && !ios
+// +build darwin,cgo,!ios
+
 package gid
 
 /*
@@ -5,6 +8,37 @@ package gid
 
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
+
+// Matching numbers are retained by the dictionary, then our temporary number
+// references are released. A NULL result is allocation failure, not wildcard.
+static CFMutableDictionaryRef gid_device_matching(uint16_t vendor, uint16_t product) {
+    CFMutableDictionaryRef matching = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    if (!matching) return NULL;
+    int32_t vendor_value = vendor;
+    int32_t product_value = product;
+    CFNumberRef vendor_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &vendor_value);
+    if (!vendor_number) { CFRelease(matching); return NULL; }
+    CFNumberRef product_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &product_value);
+    if (!product_number) { CFRelease(vendor_number); CFRelease(matching); return NULL; }
+    CFDictionarySetValue(matching, CFSTR(kIOHIDVendorIDKey), vendor_number);
+    CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), product_number);
+    CFRelease(vendor_number);
+    CFRelease(product_number);
+    return matching;
+}
+
+// Read only CoreFoundation data. This lets software tests inspect the actual
+// native matching dictionary without creating a manager or enumerating HID.
+static int gid_matching_values(CFDictionaryRef matching, int32_t *vendor, int32_t *product) {
+    if (!matching || CFDictionaryGetCount(matching) != 2) return 0;
+    CFTypeRef v = CFDictionaryGetValue(matching, CFSTR(kIOHIDVendorIDKey));
+    CFTypeRef p = CFDictionaryGetValue(matching, CFSTR(kIOHIDProductIDKey));
+    return v && p && CFGetTypeID(v) == CFNumberGetTypeID() && CFGetTypeID(p) == CFNumberGetTypeID()
+        && CFNumberGetValue((CFNumberRef)v, kCFNumberSInt32Type, vendor)
+        && CFNumberGetValue((CFNumberRef)p, kCFNumberSInt32Type, product);
+}
 */
 import "C"
 
@@ -210,28 +244,64 @@ func getPath(osDev C.IOHIDDeviceRef) string {
 		uint32(getIntProp(osDev, C.kIOHIDLocationIDKey)))
 }
 
-func iterateDevices(action func(device C.IOHIDDeviceRef) bool) cleanupDeviceManagerFn {
+type darwinMatchingDictionary struct{ ref C.CFMutableDictionaryRef }
+
+func (d *darwinMatchingDictionary) close() {
+	if d.ref != 0 {
+		C.CFRelease(C.CFTypeRef(d.ref))
+		d.ref = 0
+	}
+}
+
+func (d darwinMatchingDictionary) values() (int32, int32, bool) {
+	var vendor, product C.int32_t
+	ok := C.gid_matching_values(C.CFDictionaryRef(d.ref), &vendor, &product)
+	return int32(vendor), int32(product), ok != 0
+}
+
+func matchingDictionary(ids *darwinDeviceIDs, create func(darwinDeviceIDs) darwinMatchingDictionary) (darwinMatchingDictionary, error) {
+	// A nil filter is reserved for explicit all-metadata enumeration.
+	if ids == nil {
+		return darwinMatchingDictionary{}, nil
+	}
+	dictionary := create(*ids)
+	if dictionary.ref == 0 {
+		return dictionary, fmt.Errorf("hid: allocate device matching: %w", ioReturnToErr(C.kIOReturnNoMemory))
+	}
+	return dictionary, nil
+}
+
+func createMatchingDictionary(ids darwinDeviceIDs) darwinMatchingDictionary {
+	return darwinMatchingDictionary{ref: C.gid_device_matching(C.uint16_t(ids.vendor), C.uint16_t(ids.product))}
+}
+
+// Creating/matching/copying a manager is metadata discovery, not device open.
+// IOHIDManagerOpen would open every matched HID (historically every HID on the
+// host) before the caller's filter could run, potentially involving unrelated
+// keyboards and Input Monitoring consent. Only DeviceInfo.Open opens a device.
+func iterateDevices(ids *darwinDeviceIDs, action func(device C.IOHIDDeviceRef) bool) (cleanupDeviceManagerFn, error) {
+	dictionary, err := matchingDictionary(ids, createMatchingDictionary)
+	if err != nil {
+		return func() {}, err
+	}
+	defer dictionary.close()
 	mgr := C.IOHIDManagerCreate(C.kCFAllocatorDefault, C.kIOHIDOptionsTypeNone)
 	if mgr == 0 {
-		return func() {}
+		return func() {}, ioReturnToErr(C.kIOReturnNoMemory)
 	}
 	cleanup := func() {
-		C.IOHIDManagerClose(mgr, C.kIOHIDOptionsTypeNone)
 		C.CFRelease(C.CFTypeRef(mgr))
 	}
-	C.IOHIDManagerSetDeviceMatching(mgr, 0)
-	if C.IOHIDManagerOpen(mgr, C.kIOHIDOptionsTypeNone) != C.kIOReturnSuccess {
-		return cleanup
-	}
+	C.IOHIDManagerSetDeviceMatching(mgr, C.CFDictionaryRef(dictionary.ref))
 
 	allDevicesSet := C.IOHIDManagerCopyDevices(mgr)
 	if allDevicesSet == 0 {
-		return cleanup
+		return cleanup, nil
 	}
 	defer C.CFRelease(C.CFTypeRef(allDevicesSet))
 	devCnt := C.CFSetGetCount(allDevicesSet)
 	if devCnt == 0 {
-		return cleanup
+		return cleanup, nil
 	}
 	allDevices := make([]unsafe.Pointer, uint64(devCnt))
 	C.CFSetGetValues(allDevicesSet, &allDevices[0])
@@ -241,11 +311,19 @@ func iterateDevices(action func(device C.IOHIDDeviceRef) bool) cleanupDeviceMana
 			break
 		}
 	}
-	return cleanup
+	return cleanup, nil
 }
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
 func Devices() <-chan *DeviceInfo {
+	return darwinDevices(nil)
+}
+
+func devicesByID(vendor, product uint16) <-chan *DeviceInfo {
+	return darwinDevices(&darwinDeviceIDs{vendor: vendor, product: product})
+}
+
+func darwinDevices(ids *darwinDeviceIDs) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
 		defer close(result)
@@ -256,7 +334,7 @@ func Devices() <-chan *DeviceInfo {
 		func() {
 			enumerateLock.Lock()
 			defer enumerateLock.Unlock()
-			iterateDevices(func(device C.IOHIDDeviceRef) bool {
+			cleanup, _ := iterateDevices(ids, func(device C.IOHIDDeviceRef) bool {
 				infos = append(infos, &DeviceInfo{
 					VendorID:            uint16(getIntProp(device, C.kIOHIDVendorIDKey)),
 					ProductID:           uint16(getIntProp(device, C.kIOHIDProductIDKey)),
@@ -270,7 +348,8 @@ func Devices() <-chan *DeviceInfo {
 					Path:                getPath(device),
 				})
 				return true
-			})()
+			})
+			cleanup()
 		}()
 		for _, info := range infos {
 			result <- info
@@ -294,12 +373,16 @@ func ByPath(path string) (*DeviceInfo, error) {
 
 // Open opens the device for reading and writing.
 func (di *DeviceInfo) Open() (Device, error) {
+	ids, matchErr := darwinOpenIDs(di)
+	if matchErr != nil {
+		return nil, matchErr
+	}
 	enumerateLock.Lock()
 	defer enumerateLock.Unlock()
 
 	err := errDeviceNotFound
 	var dev *osxDevice
-	closeDM := iterateDevices(func(device C.IOHIDDeviceRef) bool {
+	closeDM, enumerateErr := iterateDevices(&ids, func(device C.IOHIDDeviceRef) bool {
 		if getPath(device) == di.Path {
 			res := C.IOHIDDeviceOpen(device, C.kIOHIDOptionsTypeSeizeDevice)
 			if res == C.kIOReturnSuccess {
@@ -317,6 +400,10 @@ func (di *DeviceInfo) Open() (Device, error) {
 		}
 		return true
 	})
+	if enumerateErr != nil {
+		closeDM()
+		return nil, enumerateErr
+	}
 	if dev == nil {
 		closeDM()
 		return nil, err

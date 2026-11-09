@@ -15,6 +15,9 @@ func TestSupported(t *testing.T) {
 }
 
 func TestThreadedDevices(t *testing.T) {
+	if os.Getenv("GID_TEST_ENUMERATE") != "1" {
+		t.Skip("set GID_TEST_ENUMERATE=1 to opt in to real host HID enumeration")
+	}
 	var pend sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		pend.Add(1)
@@ -29,6 +32,9 @@ func TestThreadedDevices(t *testing.T) {
 }
 
 func TestListAll(t *testing.T) {
+	if os.Getenv("GID_TEST_ENUMERATE") != "1" {
+		t.Skip("set GID_TEST_ENUMERATE=1 to opt in to real host HID enumeration")
+	}
 	for dev := range gid.Devices() {
 		t.Logf("%+v", dev)
 	}

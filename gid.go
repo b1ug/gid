@@ -77,14 +77,21 @@ func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
 
 // FindDevices creates a channel to emit all devices with a given vendor and product id.
 // It returns a channel which is closed when all devices have been enumerated.
+// Zero IDs match literally; they are not wildcards. Darwin applies these IDs
+// before collecting metadata, without opening a whole HID manager.
 func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
+	return filterDeviceIDs(devicesByID(vendor, product), vendor, product)
+}
+
+// Keep exact equality after native matching too: zero is a real ID here,
+// never a wildcard. Other backends can retain their existing enumeration.
+func filterDeviceIDs(devices <-chan *DeviceInfo, vendor, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
 	go func() {
-		ch := Devices()
-		defer drainDevices(ch)
+		defer drainDevices(devices)
 		defer close(result)
 
-		for dev := range ch {
+		for dev := range devices {
 			if dev.VendorID == vendor && dev.ProductID == product {
 				result <- dev
 			}

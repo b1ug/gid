@@ -1,5 +1,5 @@
-//go:build darwin && cgo
-// +build darwin,cgo
+//go:build darwin && cgo && !ios
+// +build darwin,cgo,!ios
 
 package gid
 
@@ -105,8 +105,8 @@ func TestDarwinNilString(t *testing.T) {
 }
 
 func TestDarwinOpenMissingDevice(t *testing.T) {
-	// Enumerating the host's devices is safe here: this path cannot match the
-	// transport/vendor/product/location path produced by getPath.
+	// An invalid synthetic path is now rejected before any IOKit call. This
+	// test must never enumerate or open the host's devices.
 	di := DeviceInfo{Path: "gid-test-device-that-does-not-exist"}
 	dev, err := di.Open()
 	if dev != nil {
@@ -114,5 +114,37 @@ func TestDarwinOpenMissingDevice(t *testing.T) {
 	}
 	if err != errDeviceNotFound {
 		t.Errorf("Open missing device error = %v, want %v", err, errDeviceNotFound)
+	}
+}
+
+func TestDarwinNativeMatchingDictionaryUsesExactNumericIDs(t *testing.T) {
+	for _, ids := range []darwinDeviceIDs{{0, 0}, {0, 0x01ed}, {0x27b8, 0}, {0x27b8, 0x01ed}, {0xffff, 0xffff}} {
+		dictionary, err := matchingDictionary(&ids, createMatchingDictionary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vendor, product, ok := dictionary.values()
+		if !ok || vendor != int32(ids.vendor) || product != int32(ids.product) {
+			t.Fatalf("actual CF dictionary IDs=(%d,%d,%t), want (%d,%d)", vendor, product, ok, ids.vendor, ids.product)
+		}
+		dictionary.close()
+		dictionary.close()
+		if _, _, ok := dictionary.values(); ok {
+			t.Fatal("released dictionary still exposes native data")
+		}
+	}
+}
+
+func TestDarwinMatchingAllocationFailureNeverBecomesWildcard(t *testing.T) {
+	ids := darwinDeviceIDs{vendor: 0x27b8, product: 0x01ed}
+	calls := 0
+	fail := func(darwinDeviceIDs) darwinMatchingDictionary { calls++; return darwinMatchingDictionary{} }
+	dictionary, err := matchingDictionary(&ids, fail)
+	if err == nil || dictionary.ref != 0 || calls != 1 {
+		t.Fatalf("allocation failure silently became all-device matching: %v calls=%d", err, calls)
+	}
+	dictionary, err = matchingDictionary(nil, fail)
+	if err != nil || dictionary.ref != 0 || calls != 1 {
+		t.Fatal("explicit generic metadata discovery changed historical wildcard matching")
 	}
 }
