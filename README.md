@@ -127,6 +127,10 @@ selected path. Real host enumeration
 tests require `GID_TEST_ENUMERATE=1`, and actual device opening still requires
 `GID_TEST_DEVICE_PATH`. Skipped hardware tests are not hardware validation.
 See the [Darwin matching and test boundaries](docs/darwin-device-matching.zh-CN.md).
+Optional Darwin string metadata is type-checked before calling CoreFoundation
+string APIs; missing or non-string values become empty strings. See the
+[Darwin string metadata boundary](docs/darwin-string-metadata.md) and its
+software-only crash regression test.
 
 On Linux, `FindDevices(vendor, product)` passes IDs to HIDAPI before its
 string-query device opens, then retains exact Go equality: zero IDs in the

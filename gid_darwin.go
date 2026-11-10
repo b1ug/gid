@@ -92,6 +92,10 @@ static void gid_property_fixture_ids(CFDictionaryRef properties, int32_t *vendor
     *product = gid_integer_property(CFDictionaryGetValue(properties, CFSTR(kIOHIDProductIDKey)));
 }
 
+static CFTypeRef gid_property_fixture_vendor(CFDictionaryRef properties) {
+    return CFDictionaryGetValue(properties, CFSTR(kIOHIDVendorIDKey));
+}
+
 // Software model of Apple's CompareProperty: an omitted condition is allowed;
 // a present numeric condition cannot equal a missing/non-number property.
 static int gid_property_fixture_matches(CFDictionaryRef matching, CFDictionaryRef properties) {
@@ -266,7 +270,10 @@ func releaseCFString(s C.CFStringRef) {
 }
 
 func gostring(cfs C.CFStringRef) string {
-	if cfs == 0 {
+	// IOHIDDeviceGetProperty returns an untyped CF object. Optional metadata
+	// must be a string before calling CFString APIs: a numeric property can
+	// otherwise raise an Objective-C exception and abort the process.
+	if cfs == 0 || C.CFGetTypeID(C.CFTypeRef(cfs)) != C.CFStringGetTypeID() {
 		return ""
 	}
 
@@ -328,6 +335,13 @@ func (d darwinMatchingDictionary) normalizedIDs() darwinDeviceIDs {
 	var vendor, product C.int32_t
 	C.gid_property_fixture_ids(C.CFDictionaryRef(d.ref), &vendor, &product)
 	return darwinDeviceIDs{vendor: uint16(vendor), product: uint16(product)}
+}
+
+// fixtureVendorString reads existing pure-CF metadata fixtures without creating
+// a HID manager, enumerating devices, or opening a native device.
+func (d darwinMatchingDictionary) fixtureVendorString() string {
+	property := C.gid_property_fixture_vendor(C.CFDictionaryRef(d.ref))
+	return gostring(C.CFStringRef(property))
 }
 
 func (d darwinMatchingDictionary) acceptsFixture(properties darwinMatchingDictionary) bool {
