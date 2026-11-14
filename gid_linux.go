@@ -11,12 +11,18 @@ import "C"
 
 import (
 	"errors"
-	"sync"
 	"unsafe"
 )
 
 // Devices returns a channel that will receive a DeviceInfo struct for each HID device.
 func Devices() <-chan *DeviceInfo {
+	return devicesByID(0, 0)
+}
+
+// devicesByID narrows HIDAPI's string-query opens before the Go equality filter.
+// HIDAPI treats zero as a wildcard candidate; FindDevices still returns exact
+// IDs, including zero. Devices intentionally retains the full enumeration.
+func devicesByID(vendor, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo, maxDeviceChannelSize)
 	go func() {
 		enumerateLock.Lock()
@@ -24,7 +30,7 @@ func Devices() <-chan *DeviceInfo {
 		defer close(result)
 
 		// Gather all device infos and ensure they are freed before returning
-		head := C.hid_enumerate(C.ushort(0), C.ushort(0))
+		head := C.hid_enumerate(C.ushort(vendor), C.ushort(product))
 		if head == nil {
 			return
 		}
@@ -88,20 +94,43 @@ func (di *DeviceInfo) Open() (Device, error) {
 type linuxDevice struct {
 	*DeviceInfo // Embed the infos for easier access
 
-	device *C.hid_device // Low level HID device to communicate through
-	lock   sync.Mutex
+	device   *C.hid_device // Protected by a lifetime lease, or exclusive Close.
+	lifetime linuxLifetime
 }
 
-// Close releases the HID USB device handle.
+// Close rejects new I/O, waits for active native calls, and releases the HID
+// handle once. It has no hard deadline: native calls and hid_close's read-thread
+// join can still block. Concurrent Close callers wait for the same disposal.
 func (dev *linuxDevice) Close() {
-	dev.lock.Lock()
-	defer dev.lock.Unlock()
+	dev.lifetime.close(func() {
+		if dev.device != nil {
+			C.hid_close(dev.device)
+			dev.device = nil
+		}
+	})
+}
 
-	if dev.device != nil {
-		C.hid_close(dev.device)
-		dev.device = nil
+// acquireDevice returns a pinned handle. The caller must retain the lease until
+// the native operation and any native error-string conversion have finished.
+func (dev *linuxDevice) acquireDevice() (*C.hid_device, error) {
+	if !dev.lifetime.acquire() {
+		return nil, errDeviceClosed
 	}
-	return
+	if dev.device == nil {
+		dev.lifetime.release()
+		return nil, errDeviceClosed
+	}
+	return dev.device, nil
+}
+
+// linuxNativeError may only be called while the native handle is pinned.
+func linuxNativeError(device *C.hid_device) error {
+	message := C.hid_error(device)
+	if message == nil {
+		return errors.New("hidapi: unknown failure")
+	}
+	failure, _ := wcharTToString(message)
+	return errors.New("hidapi: " + failure)
 }
 
 // Write sends an output report to a HID device.
@@ -109,38 +138,18 @@ func (dev *linuxDevice) Close() {
 // Write will send the data on the first OUT endpoint, if one exists. If it does
 // not, it will send the data through the Control Endpoint (Endpoint 0).
 func (dev *linuxDevice) Write(b []byte) error {
-	// Abort if nothing to write
-	if len(b) == 0 {
-		return nil
+	device, err := dev.acquireDevice()
+	if err != nil {
+		return err
 	}
-	// Abort if device closed in between
-	dev.lock.Lock()
-	device := dev.device
-	dev.lock.Unlock()
-
-	if device == nil {
-		return errDeviceClosed
+	defer dev.lifetime.release()
+	if err := validateReportBuffer(b); err != nil {
+		return err
 	}
-	report := b
-
 	// Execute the write operation
-	written := int(C.hid_write(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	written := int(C.hid_write(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
 	if written == -1 {
-		// If write failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return errDeviceClosed
-		}
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return errors.New("hidapi: " + failure)
+		return linuxNativeError(device)
 	}
 
 	return nil
@@ -158,37 +167,19 @@ func (dev *linuxDevice) Write(b []byte) error {
 // which do not use numbered reports), followed by the report data (16 bytes).
 // In this example, the length passed in would be 17.
 func (dev *linuxDevice) WriteFeature(b []byte) error {
-	// Abort if nothing to write
-	if len(b) == 0 {
-		return nil
+	device, err := dev.acquireDevice()
+	if err != nil {
+		return err
 	}
-	// Abort if device closed in between
-	dev.lock.Lock()
-	device := dev.device
-	dev.lock.Unlock()
-
-	if device == nil {
-		return errDeviceClosed
+	defer dev.lifetime.release()
+	if err := validateReportBuffer(b); err != nil {
+		return err
 	}
 
 	// Send the feature report
 	written := int(C.hid_send_feature_report(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
 	if written == -1 {
-		// If write failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return errDeviceClosed
-		}
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return errors.New("hidapi: " + failure)
+		return linuxNativeError(device)
 	}
 	return nil
 }
@@ -197,40 +188,28 @@ func (dev *linuxDevice) WriteInterrupt(endpoint byte, data []byte) (int, error) 
 	return 0, errNotImplemented
 }
 
-// Read retrieves an input report from a HID device.
+// Read blocks until an input report, a native error, or Close. Finite native
+// wait slices are internal; an idle slice is not reported as a successful read.
 func (dev *linuxDevice) Read(b []byte) (int, error) {
-	// Abort if nothing to read
+	device, err := dev.acquireDevice()
+	if err != nil {
+		return 0, err
+	}
+	defer dev.lifetime.release()
+	// HIDAPI input reads receive reports rather than selecting a report ID.
 	if len(b) == 0 {
-		return 0, nil
+		return 0, errEmptyReportBuffer
 	}
-	// Abort if device closed in between
-	dev.lock.Lock()
-	device := dev.device
-	dev.lock.Unlock()
-
-	if device == nil {
-		return 0, errDeviceClosed
-	}
-	// Execute the read operation
-	read := int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
-	if read == -1 {
-		// If the read failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return 0, errDeviceClosed
+	// A finite native wait lets this read return its lease after Close signals.
+	// Other operations retain concurrent read leases, so a write that generates
+	// input can still make progress while this call waits for that input.
+	return linuxPollInput(&dev.lifetime, func(milliseconds int) (int, error) {
+		n := int(C.hid_read_timeout(device, (*C.uchar)(&b[0]), C.size_t(len(b)), C.int(milliseconds)))
+		if n == -1 {
+			return 0, linuxNativeError(device)
 		}
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return 0, errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return 0, errors.New("hidapi: " + failure)
-	}
-	return read, nil
+		return n, nil
+	})
 }
 
 // ReadFeature retrieves a feature report from a HID device
@@ -239,38 +218,19 @@ func (dev *linuxDevice) Read(b []byte) (int, error) {
 // sure to allow space for this extra byte in []b. Upon return, the first byte
 // will still contain the Report ID, and the report data will start in b[1].
 func (dev *linuxDevice) ReadFeature(b []byte) (int, error) {
-	// Abort if we don't have anywhere to write the results
-	if len(b) == 0 {
-		return 0, nil
+	device, err := dev.acquireDevice()
+	if err != nil {
+		return 0, err
 	}
-	// Abort if device closed in between
-	dev.lock.Lock()
-	device := dev.device
-	dev.lock.Unlock()
-
-	if device == nil {
-		return 0, errDeviceClosed
+	defer dev.lifetime.release()
+	if err := validateReportBuffer(b); err != nil {
+		return 0, err
 	}
 
 	// Retrieve the feature report
 	read := int(C.hid_get_feature_report(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
 	if read == -1 {
-		// If the read failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return 0, errDeviceClosed
-		}
-
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return 0, errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return 0, errors.New("hidapi: " + failure)
+		return 0, linuxNativeError(device)
 	}
 
 	return read, nil

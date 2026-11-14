@@ -1,0 +1,323 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-11-09",
+  "repository": "https://github.com/b1ug/gid",
+  "reviewed_gid_commit": "c0be9f8baa56bd4c4fd7958a9ce942c4fc3e6b58",
+  "scope": "Recorded source provenance and offline fingerprints. No automatic network/update, license-policy inference, native build or device-support claim.",
+  "files": [
+    {
+      "path": "hidapi_linux.h",
+      "sha256": "ff4a7492e300f05e70a6331f3dc3de9da17a822895b634eee9d6880ff79f6102",
+      "bytes": 539853,
+      "lines": 16370,
+      "role": "Inlined HIDAPI/libusb C implementation and retained notices"
+    },
+    {
+      "path": "wchar.go",
+      "sha256": "899dff588a40ee5de9ad0a6a3690280c171b5c35afcaa46207f11be23fbd3719",
+      "bytes": 4822,
+      "lines": 228,
+      "role": "Inline gowchar-derived wide-character conversion"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "a428d1101807989e11ae625f4316d360a27b2a922f4f6cb6ce5981e8cfeafe93",
+      "bytes": 1076,
+      "lines": 21,
+      "role": "GID project MIT notice"
+    },
+    {
+      "path": "LICENSE-old",
+      "sha256": "36d2e94c565d51a5146d729e6be6a3d26168d473d97c94011b13700e82c622e4",
+      "bytes": 1085,
+      "lines": 21,
+      "role": "Retained boombuler MIT notice"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "5969f363ab3ff371b3844222bc20b6c40a15d4c47546d9b342a9303266cf7a9c",
+      "bytes": 36,
+      "lines": 3,
+      "role": "Go module floor and direct requirements snapshot"
+    }
+  ],
+  "go_module": {
+    "module": "github.com/b1ug/gid",
+    "go": "1.13",
+    "direct_requirements": [],
+    "note": "Copied C/Go source and OS frameworks are not updated by go get -u."
+  },
+  "native_backends": [
+    {
+      "platform": "darwin",
+      "binding_file": "gid_darwin.go",
+      "frameworks": [
+        "CoreFoundation",
+        "IOKit"
+      ],
+      "link_flags": [
+        "-L .",
+        "-L/usr/local/lib",
+        "-framework CoreFoundation",
+        "-framework IOKit"
+      ],
+      "headers": [
+        "IOKit/hid/IOHIDManager.h",
+        "CoreFoundation/CoreFoundation.h"
+      ],
+      "cgo_required": true,
+      "external_hidapi_or_libusb_link_in_build_rules": false
+    },
+    {
+      "platform": "windows",
+      "binding_file": "gid_windows.go",
+      "system_libraries": [
+        "Setupapi",
+        "hid"
+      ],
+      "link_flags": [
+        "-lSetupapi",
+        "-lhid"
+      ],
+      "headers": [
+        "windows.h",
+        "setupapi.h",
+        "hidsdi.h",
+        "hidclass.h",
+        "stdint.h"
+      ],
+      "cgo_required": true,
+      "external_hidapi_or_libusb_link_in_build_rules": false
+    },
+    {
+      "platform": "linux",
+      "binding_file": "gid_linux.go",
+      "embedded_file": "hidapi_linux.h",
+      "link_flags": [
+        "-lrt on linux,!android"
+      ],
+      "headers": [
+        "poll.h",
+        "wchar.h",
+        "pthread.h and other headers included by the amalgamation"
+      ],
+      "cgo_required": true,
+      "pkg_config_or_external_libusb_link_in_build_rules": false
+    }
+  ],
+  "history": [
+    {
+      "repository": "https://github.com/b1ug/nb1dev",
+      "commit": "17af24c611eb96659bda73a5754bb22e5d0f1ece",
+      "date": "2023-09-09",
+      "message": "Forked original hid lib from https://github.com/boombuler/hid",
+      "evidence": "Imported hid/hid_darwin.go exactly matches boombuler/hid at comparison revision 6a2dff8586bc3a3eecf4544e06adfa3cd132deff. Original chosen upstream ref was not recorded."
+    },
+    {
+      "repository": "https://github.com/b1ug/nb1dev",
+      "commit": "d2cc7640f362c09c4b21e75b8f6faff0340794fa",
+      "date": "2023-09-14",
+      "message": "migrate hid/linux with dolmen-go/hid package (#9)",
+      "evidence": "hid/hidapi_linux.h is byte-identical to current GID hidapi_linux.h."
+    },
+    {
+      "repository": "https://github.com/b1ug/nb1dev",
+      "commit": "897b20000b6e6a37367f459b26047e84b8feddf6",
+      "date": "2023-09-18",
+      "message": "for hid readme, license and typo fix (#11)",
+      "evidence": "Records prior hid attribution and notice changes before GID extraction."
+    },
+    {
+      "repository": "https://github.com/b1ug/gid",
+      "commit": "19cb4235ec7c9e3d9300a8e4ed6434c810f41394",
+      "date": "2023-09-19",
+      "message": "Migrate from nb1/hid",
+      "evidence": "First GID import of hidapi_linux.h, wchar.go and LICENSE-old. The historical nb1/hid tree is now in b1ug/nb1dev."
+    },
+    {
+      "repository": "https://github.com/b1ug/gid",
+      "commit": "39cc55c19eeabd21def1028266ff8dbbfa5f6c8e",
+      "date": "2023-09-19",
+      "message": "Rename hid -> gid, add README content",
+      "evidence": "wchar.go changed package hid to package gid; no other post-import wchar.go content changes through the reviewed snapshot."
+    }
+  ],
+  "reconstruction": {
+    "supplier_repository": "https://github.com/dolmen-go/hid",
+    "supplier_commit": "27ac09ac07a3d215b5f360726ecff13b50196fde",
+    "original_import_ref_recorded": false,
+    "generator": "internal/gen.go",
+    "generator_git_blob": "aa9451459aa72fa9539568eb9659daeb68cddb30",
+    "ran_offline": true,
+    "generated_header_sha256": "5f8ca3707bf8ae9992fb78d6a160394a2f75e24298ed92f2ddc65633f5018a86",
+    "generated_matches_supplier_tracked_header": true,
+    "header_transform": {
+      "operation": "Replace every byte sequence #line SPACE with // SPACE line SPACE",
+      "python_expression": "generated.replace(b'#line ', b'// line ')",
+      "matches_current_gid_bytes": true
+    },
+    "wchar_transform": {
+      "operations": [
+        "package hid -> package gid",
+        "vendored -> vendorized in two attribution comments"
+      ],
+      "matches_current_gid_bytes": true,
+      "supplier_wchar_sha256": "efe02bad7a2b4042ef71e9dddc5b723ca5de95429ee0acd057ef6927410300b8"
+    },
+    "limit": "Reconstruction pins an exact supplier snapshot and documented transformations. It does not prove the original importer selected this git ref, nor identify the independent HIDAPI/libusb upstream commits."
+  },
+  "components": [
+    {
+      "name": "boombuler/hid foundation",
+      "repository": "https://github.com/boombuler/hid",
+      "original_import_revision": null,
+      "comparison_revision": "6a2dff8586bc3a3eecf4544e06adfa3cd132deff",
+      "local_attribution": [
+        "README.md:10",
+        "README.md:92",
+        "LICENSE-old"
+      ],
+      "retained_notice": "MIT, copyright 2014 Florian Sundermann; LICENSE-old byte-identical to comparison revision LICENSE.",
+      "current_binding_files": [
+        "gid_darwin.go",
+        "gid_windows.go"
+      ],
+      "limit": "Current bindings contain subsequent local changes; comparison is historical evidence, not current full-file equivalence."
+    },
+    {
+      "name": "dolmen-go/hid supplier",
+      "repository": "https://github.com/dolmen-go/hid",
+      "original_import_revision": null,
+      "reconstruction_revision": "27ac09ac07a3d215b5f360726ecff13b50196fde",
+      "local_attribution": [
+        "README.md:10",
+        "README.md:93"
+      ],
+      "retained_notice": "The copied HIDAPI/libusb headers and wchar.go retain their own source/license statements. GID has no separate dolmen LICENSE.md copy."
+    },
+    {
+      "name": "HIDAPI embedded C",
+      "repository": "https://github.com/signal11/hidapi",
+      "current_official_repository": "https://github.com/libusb/hidapi",
+      "exact_upstream_revision": null,
+      "upstream_release_equivalence": "unknown",
+      "local_file": "hidapi_linux.h",
+      "source_sections": [
+        "hidapi/libusb/hid.c",
+        "hidapi/hidapi/hidapi.h"
+      ],
+      "retained_notice_lines": [
+        [
+          14465,
+          14488
+        ],
+        [
+          14516,
+          14536
+        ]
+      ],
+      "retained_notice": "Header lists GPLv3, BSD-style or original HIDAPI alternatives; GID README links the BSD option. This audit does not select or replace license text.",
+      "separate_upstream_license_files_in_gid": []
+    },
+    {
+      "name": "libusb embedded C",
+      "repository": "https://github.com/libusb/libusb",
+      "exact_upstream_revision": null,
+      "upstream_release_equivalence": "unknown",
+      "local_file": "hidapi_linux.h",
+      "observed_version_macro_definitions": {
+        "LIBUSB_NANO": [
+          "11182",
+          "0"
+        ],
+        "LIBUSB_MAJOR": [
+          "1"
+        ],
+        "LIBUSB_MINOR": [
+          "0"
+        ],
+        "LIBUSB_MICRO": [
+          "21"
+        ]
+      },
+      "macro_summary": "First definitions read 1.0.21 with LIBUSB_NANO=11182; a later guarded fallback defines NANO=0. A macro is not proof of complete release equivalence.",
+      "retained_notice_lines": [
+        [
+          2,
+          22
+        ],
+        [
+          44,
+          62
+        ]
+      ],
+      "retained_notice": "Repeated copied libusb headers state LGPL 2.1 or later and retain their copyright holders.",
+      "separate_COPYING_file_in_gid": false
+    },
+    {
+      "name": "gowchar-derived conversion",
+      "repository": "https://github.com/orofarne/gowchar",
+      "exact_upstream_revision": null,
+      "indirect_supplier_revision": "27ac09ac07a3d215b5f360726ecff13b50196fde",
+      "local_file": "wchar.go",
+      "local_attribution": [
+        "wchar.go:1-7"
+      ],
+      "retained_notice": "Header attributes gowchar.go and links its 3-clause BSD license; no separate gowchar LICENSE file is present in GID.",
+      "license_source_url": "https://github.com/orofarne/gowchar/blob/master/LICENSE"
+    }
+  ],
+  "embedded_source_markers": [
+    "hidapi/hidapi/hidapi.h",
+    "hidapi/libusb/hid.c",
+    "libusb/libusb/config.h",
+    "libusb/libusb/core.c",
+    "libusb/libusb/descriptor.c",
+    "libusb/libusb/hotplug.c",
+    "libusb/libusb/hotplug.h",
+    "libusb/libusb/io.c",
+    "libusb/libusb/libusb.h",
+    "libusb/libusb/libusbi.h",
+    "libusb/libusb/os/linux_netlink.c",
+    "libusb/libusb/os/linux_usbfs.c",
+    "libusb/libusb/os/linux_usbfs.h",
+    "libusb/libusb/os/poll_posix.c",
+    "libusb/libusb/os/poll_posix.h",
+    "libusb/libusb/os/poll_windows.h",
+    "libusb/libusb/os/threads_posix.c",
+    "libusb/libusb/os/threads_posix.h",
+    "libusb/libusb/os/threads_windows.h",
+    "libusb/libusb/strerror.c",
+    "libusb/libusb/sync.c",
+    "libusb/libusb/version.h",
+    "libusb/libusb/version_nano.h"
+  ],
+  "release_watch": [
+    {
+      "repository": "https://github.com/libusb/hidapi",
+      "tag": "hidapi-0.15.0",
+      "published_at": "2025-05-18T18:58:29Z",
+      "source": "https://github.com/libusb/hidapi/releases/tag/hidapi-0.15.0",
+      "status": "Observed official latest stable release on 2026-11-09; not incorporated."
+    },
+    {
+      "repository": "https://github.com/libusb/libusb",
+      "tag": "v1.0.30",
+      "published_at": "2026-05-17T22:06:02Z",
+      "source": "https://github.com/libusb/libusb/releases/tag/v1.0.30",
+      "status": "Observed official latest stable release on 2026-11-09; not incorporated."
+    },
+    {
+      "repository": "https://github.com/sstallion/go-hid",
+      "tag": "v0.15.0",
+      "published_at": "2025-05-23T13:35:37Z",
+      "source": "https://github.com/sstallion/go-hid/releases/tag/v0.15.0",
+      "status": "Comparison candidate only; not a Go module dependency or selected replacement."
+    }
+  ],
+  "unknowns": [
+    "Independent exact HIDAPI and libusb upstream commits before supplier amalgamation.",
+    "Original gowchar source revision before inline vendoring.",
+    "Original importer-selected boombuler/dolmen git refs, despite verified content comparisons."
+  ]
+}

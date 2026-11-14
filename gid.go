@@ -34,13 +34,17 @@ type DeviceInfo struct {
 type Device interface {
 	// Close closes the device and release all kept resources.
 	Close()
-	// Write to the device (technically a HID report with type 'output' is sent to the device)
+	// Write sends an output report. The first byte is the report ID, or zero
+	// for an unnumbered report. A zero ID must be followed by report data.
+	// Empty buffers are rejected.
 	Write([]byte) error
-	// WriteFeature to the device (technically a HID report with type 'feature' is sent to the device)
+	// WriteFeature sends a feature report using the same buffer format as Write.
 	WriteFeature([]byte) error
 	// Read from the device
 	Read([]byte) (int, error)
-	// ReadFeature from the device
+	// ReadFeature retrieves a feature report. The first byte selects the report
+	// ID (zero for unnumbered reports); allow space for this ID in the buffer.
+	// Empty buffers and a zero ID without room for data are rejected.
 	ReadFeature([]byte) (int, error)
 }
 
@@ -73,14 +77,24 @@ func ListAllDevices(cond func(*DeviceInfo) bool) []*DeviceInfo {
 
 // FindDevices creates a channel to emit all devices with a given vendor and product id.
 // It returns a channel which is closed when all devices have been enumerated.
+// Zero IDs match literally in returned metadata; they are not wildcards.
+// Darwin prefilters nonzero IDs before collecting metadata, without opening
+// a whole HID manager, then preserves the historical Go equality check.
+// Linux passes IDs to HIDAPI before its string-query opens; generic discovery
+// may still access usbfs on systems without sufficient sysfs metadata.
 func FindDevices(vendor uint16, product uint16) <-chan *DeviceInfo {
+	return filterDeviceIDs(devicesByID(vendor, product), vendor, product)
+}
+
+// Keep exact equality after native matching too: zero is a real ID here,
+// never a wildcard. Other backends can retain their existing enumeration.
+func filterDeviceIDs(devices <-chan *DeviceInfo, vendor, product uint16) <-chan *DeviceInfo {
 	result := make(chan *DeviceInfo)
 	go func() {
-		ch := Devices()
-		defer drainDevices(ch)
+		defer drainDevices(devices)
 		defer close(result)
 
-		for dev := range ch {
+		for dev := range devices {
 			if dev.VendorID == vendor && dev.ProductID == product {
 				result <- dev
 			}
@@ -123,8 +137,9 @@ func drainDevices(ch <-chan *DeviceInfo) {
 // for enumeration, causing crashes if called concurrently.
 //
 // For more details, see:
-//   https://developer.apple.com/documentation/iokit/1438371-iohidmanagersetdevicematching
-//   > "subsequent calls will cause the hid manager to release previously enumerated devices"
+//
+//	https://developer.apple.com/documentation/iokit/1438371-iohidmanagersetdevicematching
+//	> "subsequent calls will cause the hid manager to release previously enumerated devices"
 var enumerateLock sync.Mutex
 
 var (
