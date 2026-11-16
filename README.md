@@ -20,7 +20,7 @@ The native backends target the following systems:
 * Windows: Utilizes native Windows HID library
 
 The original project recorded tests on these systems. These historical results
-do not establish compatibility of the current candidate with those OS versions:
+do not establish compatibility of the current implementation with those OS versions:
 
 * macOS Ventura 13.5.2 (on Apple M1 Chip)
 * Windows 10 x64 - Build 19045
@@ -45,12 +45,14 @@ Go 1.13.15 is checked separately on Ubuntu 22.04 to retain the module's source
 compatibility floor. This does not establish a minimum supported OS version or
 verify old systems, Raspberry Pi OS, or device I/O on hosted runners.
 
-The current development candidate is on `validation/runtime-gid`; it is separate
-from the frozen [PR #2](https://github.com/b1ug/gid/pull/2) at `f520a7e`.
-CI results apply to their exact checked-out commits. The [runtime integration run](https://github.com/b1ug/nb1/actions/runs/42517136819)
+The discovery, metadata, report-buffer and device-lifetime changes developed on
+`validation/runtime-gid` were merged in
+[PR #2](https://github.com/b1ug/gid/pull/2) at `a0632df`.
+CI results apply to their exact checked-out commits. The earlier [runtime integration run](https://github.com/b1ug/nb1/actions/runs/42517136819)
 passed all eight jobs with GID `7d9978d`, including Windows amd64 and 386/WOW64
-software tests. See the [Chinese candidate validation record](docs/candidate-validation.zh-CN.md)
-for the commits, failed attempt, local checks and remaining hardware work.
+software tests. The [Chinese validation record](docs/candidate-validation.zh-CN.md)
+preserves those historical commits, the failed attempt, local checks and
+remaining hardware boundaries.
 
 By default, tests do not enumerate or open host HID devices. Real enumeration
 requires `GID_TEST_ENUMERATE=1`. To opt in to an open/close smoke test, select an
@@ -87,7 +89,7 @@ disconnects surface as I/O errors, and callers must still call `Close` and open
 a new device after re-enumeration. `Close` waits for pending native I/O and has
 no guaranteed deadline. Physical unplug/replug still requires hardware testing.
 
-In the current Linux candidate, every implemented I/O operation pins the native
+In the Linux backend, every implemented I/O operation pins the native
 handle through the call and error-string copy. `Close` rejects new operations,
 waits for active leases and disposes once. Input `Read` uses internal 100 ms
 native wait slices to observe closing while retaining its blocking public
@@ -95,7 +97,7 @@ behavior. Reads and writes can overlap; a write that causes input is not blocked
 behind the waiting read. The slice is not a close deadline: native calls, the
 vendored clock behavior and the read-thread join can still delay completion.
 
-In the current Windows candidate, `Close` publishes closing, requests
+In the Windows backend, `Close` publishes closing, requests
 `CancelIoEx`, waits for active operations and closes the handle once. Each
 overlapped operation retains its own C-allocated payload, `OVERLAPPED` and event
 until native completion is collected. A late-issued operation also requests its
@@ -103,26 +105,50 @@ own cancellation if closing has begun. Requesting cancellation does not release
 resources early. Synchronous `HidD_SetFeature` and driver behavior can still
 delay `Close`. Native Windows software tests cover pending named-pipe cancellation;
 they do not validate physical HID or guarantee a close deadline.
-The enumeration candidate also bounds string copying and uses the native C
+Windows enumeration also bounds string copying and uses the native C
 detail-structure size; HID metadata failures leave optional strings empty rather
 than reusing another field. See the [Windows validation notes](docs/windows-enumeration-validation.md)
 and [metadata regression record](docs/windows-hid-metadata-validation.zh-CN.md).
 
+### Cancellation and timeout contract
+
+The public `Device` methods wait for their result. The current interface has no
+context, deadline or caller-supplied timeout parameters. Cancelling a caller's
+context or ceasing to wait does not itself abort an issued native call or
+confirm that `Close` has completed. Go's
+[context cancellation](https://pkg.go.dev/context#CancelFunc) is a cooperative
+signal; it does not wait for the work to stop.
+
+Platform mechanisms differ. Linux has internal finite waits; Windows requests
+native cancellation for pending overlapped I/O. Neither establishes a portable
+hard deadline for I/O or `Close`. In particular,
+[Windows cancellation](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex)
+must still be followed by collecting the operation's completion before its
+resources can be released. The macOS backend waits for synchronous I/O before
+closing its handle, as described above.
+
+Treat an unfinished native operation as pending or of unknown outcome when the
+caller stops waiting. Do not report confirmed cancellation or hand the device
+to another writer until native completion and required cleanup are confirmed.
+Cancellation does not roll back reports that have already reached the device.
+These are the documented guarantees of this version; future API or backend
+improvements remain possible.
+
 These lifetime guards do not serialize a multi-call application protocol. A
 request-write/response-read transaction still needs an application-level owner
-or lock. No operation provides a portable context or timeout contract, and
-disconnect recovery still requires closing, re-enumerating and opening a new
-handle. Physical Linux/Windows USB and blink(1) mk3 behavior remain unverified.
+or lock. Disconnect recovery still requires closing, re-enumerating and opening
+a new handle. Physical Linux/Windows USB and blink(1) mk3 behavior remain
+unverified.
 
 Darwin native errors now preserve their existing text while exposing the raw
 IOKit code through `NativePlatform()` / `NativeCode()`. Other platforms' errors
 have not been unified into that diagnostic contract. See [native error details](docs/native-errors.md).
 
-The Darwin metadata candidate no longer opens a whole HID manager while
+Darwin discovery no longer opens a whole HID manager while
 enumerating. `FindDevices` prefilters nonzero VID/PID values in IOKit and retains
 exact Go filtering for zero metadata IDs, including legacy missing/non-number
 properties normalized to zero. `Devices` retains all-device metadata discovery.
-`DeviceInfo.Open` uses the same candidate policy and opens only the exact
+`DeviceInfo.Open` uses the same filtering policy and opens only the exact
 selected path. Real host enumeration
 tests require `GID_TEST_ENUMERATE=1`, and actual device opening still requires
 `GID_TEST_DEVICE_PATH`. Skipped hardware tests are not hardware validation.
