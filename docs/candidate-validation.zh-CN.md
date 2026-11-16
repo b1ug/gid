@@ -1,5 +1,14 @@
 # GID 当前候选：改动与验证边界
 
+> 2026-11-16 更新：相关改动已随 [PR #2](https://github.com/b1ug/gid/pull/2)
+> 合入 `a0632df`；下文保留 2026-11-09 当时的候选、提交与验证记录。
+> 当前 `Device` 接口没有 context、deadline 或调用方 timeout 参数。
+> 平台已有部分取消和有限等待机制，但不保证 I/O 或 `Close` 在统一硬截止内完成。
+> 本轮将这一点作为文档化的 API／系统能力边界，不作为必须新增取消 API
+> 或改写后端的发布阻塞；这也不表示未来无法改善。
+> 本记录没有复现原生永久挂死，重试恢复的错误也不能据此归因为取消故障。
+> 当前契约见 [Cancellation and timeout contract](../README.md#cancellation-and-timeout-contract)。
+
 记录日期：2026-11-09。本文区分源码改动、软件测试和真实 USB 验证，后续结果应按实际提交追加。
 
 ## 提交与审查边界
